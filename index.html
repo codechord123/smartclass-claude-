@@ -36,7 +36,7 @@
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { initializeFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, getDocs, collection, query, orderBy, limit, startAfter, increment, deleteField, onSnapshot, arrayUnion, arrayRemove, where } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+    import { initializeFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, getDocs, collection, query, orderBy, limit, startAfter, increment, deleteField, onSnapshot, arrayUnion, arrayRemove, where, documentId } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
     // Firebase 설정
     const firebaseConfig = {
@@ -295,9 +295,12 @@
 
       useEffect(() => {
         if (!dbUser || !db) return;
-        const qSug = query(collection(db, "suggestions"), orderBy("id", "desc"), limit(suggestionLimit));
+        const qSug = query(collection(db, "suggestions"), orderBy(documentId(), "desc"), limit(suggestionLimit));
         const unsubSug = onSnapshot(qSug, (snap) => {
-          setSuggestions(snap.docs.map(d => d.data()));
+          setSuggestions(snap.docs.map(d => {
+            const data = d.data() || {};
+            return { ...data, id: data.id ?? d.id };
+          }));
           setHasMoreSuggestions(snap.docs.length === suggestionLimit);
         });
         return () => unsubSug();
@@ -305,9 +308,12 @@
 
       useEffect(() => {
         if (!dbUser || !db) return;
-        const qRep = query(collection(db, "readingReports"), orderBy("id", "desc"), limit(reportLimit));
+        const qRep = query(collection(db, "readingReports"), orderBy(documentId(), "desc"), limit(reportLimit));
         const unsubRep = onSnapshot(qRep, (snap) => {
-          setReadingReports(snap.docs.map(d => d.data()));
+          setReadingReports(snap.docs.map(d => {
+            const data = d.data() || {};
+            return { ...data, id: data.id ?? d.id };
+          }));
           setHasMoreReports(snap.docs.length === reportLimit);
         });
         return () => unsubRep();
@@ -459,7 +465,7 @@
           if(!dR || typeof dR !== 'object') return;
           Object.values(dR).forEach(t => { if(t) score += getPoints(t[studentId]); });
         }); 
-        score += (booksRead || {})[studentId] || 0;
+        score += Number((booksRead || {})[studentId]) || 0;
         return score;
       };
 
@@ -476,17 +482,20 @@
         return { totalSilverTokens: totalEarnedSilverTokens, earnedGoldTokens, availableGoldTokens: earnedGoldTokens - spentClassGoldTokens, progressToNextGold: totalEarnedSilverTokens % 25, nextRewardTier: Math.min(Math.ceil((earnedGoldTokens + 1) / 10) * 10 || 10, 100) };
       };
 
-      const getTotalBooksRead = () => Object.values(booksRead || {}).reduce((acc, curr) => acc + curr, 0);
+      const getTotalBooksRead = () => Object.values(booksRead || {}).reduce((acc, curr) => acc + (Number(curr) || 0), 0);
 
       const adjustTeacherReading = async (studentId, delta) => {
-        setBooksRead(prev => ({ ...prev, [studentId]: Math.max(0, (prev[studentId] || 0) + delta) })); 
+        const cur = (booksRead || {})[studentId] || 0;
+        const next = Math.max(0, cur + delta);
+        if (next === cur) { showToast("더 이상 차감할 수 없습니다."); return; }
+        setBooksRead(prev => ({ ...prev, [studentId]: next }));
         try {
             await updateDoc(doc(db, "classData", "mainState"), {
-                [`booksRead.${studentId}`]: increment(delta)
+                [`booksRead.${studentId}`]: increment(next - cur)
             });
             invalidateCache();
         } catch (e) {
-            await setDoc(doc(db, "classData", "mainState"), { booksRead: { [studentId]: Math.max(0, delta) } }, { merge: true });
+            await setDoc(doc(db, "classData", "mainState"), { booksRead: { [studentId]: next } }, { merge: true });
             invalidateCache();
         }
         showToast(`독서 마라톤 ${delta>0?'+1권 처리됨':'-1권 차감됨'}`);
@@ -516,7 +525,7 @@
             if (recordDate.getMonth() === targetMonth && recordDate.getFullYear() === targetYear) monthly += pointsThisDay;
           }
         });
-        cumulative += (booksRead || {})[targetStudentId] || 0;
+        cumulative += Number((booksRead || {})[targetStudentId]) || 0;
         return { daily, weekly, monthly, cumulative };
       };
 
@@ -739,18 +748,29 @@
 
         const s = students.find(x => x.id === authStatus.user.id);
         const reportIdToSave = editingReportId || (Date.now() + "_" + Math.random().toString(36).substring(2, 9));
-        const nR = { id: reportIdToSave, studentId: s.id, studentName: s.name, title: title.trim(), author: author.trim(), publisher: publisher.trim(), scene: scene.trim(), quote: quote.trim(), summary: summary.trim(), thoughts: thoughts.trim(), isAnonymous: isReportAnonymous, isDraft: saveAsDraft, date: new Date().toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) };
+        const existingReport = editingReportId ? readingReports.find(r => String(r.id) === String(editingReportId)) : null;
+        const alreadyCountedBefore = !!(existingReport && (existingReport.wasPublished || existingReport.isDraft === false));
+        const willCountNow = !saveAsDraft && !alreadyCountedBefore;
 
-        const existingReport = editingReportId ? readingReports.find(r => r.id === editingReportId) : null;
+        const nR = {
+          id: reportIdToSave, studentId: s.id, studentName: s.name,
+          title: title.trim(), author: author.trim(), publisher: publisher.trim(),
+          scene: scene.trim(), quote: quote.trim(), summary: summary.trim(), thoughts: thoughts.trim(),
+          isAnonymous: isReportAnonymous, isDraft: saveAsDraft,
+          wasPublished: alreadyCountedBefore || !saveAsDraft,
+          createdAt: existingReport?.createdAt ?? Date.now(),
+          updatedAt: Date.now(),
+          date: new Date().toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+        };
         if(existingReport) nR.comments = existingReport.comments || [];
 
         if (editingReportId) await updateDoc(doc(db, "readingReports", String(editingReportId)), nR);
         else await setDoc(doc(db, "readingReports", String(nR.id)), nR);
 
-        if (!saveAsDraft && (!existingReport || existingReport.isDraft)) {
+        if (willCountNow) {
             setBooksRead(prev => ({ ...prev, [s.id]: (prev[s.id] || 0) + 1 }));
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`booksRead.${s.id}`]: increment(1) }); invalidateCache(); } 
-            catch(e) { await setDoc(doc(db, "classData", "mainState"), { booksRead: { [s.id]: 1 } }, { merge: true }); invalidateCache(); }
+            try { await updateDoc(doc(db, "classData", "mainState"), { [`booksRead.${s.id}`]: increment(1) }); invalidateCache(); }
+            catch(e) { await setDoc(doc(db, "classData", "mainState"), { booksRead: { [s.id]: (booksRead[s.id] || 0) + 1 } }, { merge: true }); invalidateCache(); }
         }
 
         if (saveAsDraft) { setEditingReportId(reportIdToSave); showToast("임시저장되었습니다. 화면에서 이어서 작성하세요! 💾"); } 
@@ -777,9 +797,13 @@
           onConfirm: async () => {
             setEditingReportId(prevId => { if (String(prevId) === targetIdStr) { setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setIsReportAnonymous(false); return null; } return prevId; });
             await deleteDoc(doc(db, "readingReports", targetIdStr));
-            if (!isDraft) {
+            const wasCounted = !isDraft || reportToDelete.wasPublished;
+            if (wasCounted) {
+                const curCount = (booksRead || {})[authorId] || 0;
                 setBooksRead(prev => ({ ...prev, [authorId]: Math.max(0, (prev[authorId] || 0) - 1) }));
-                await updateDoc(doc(db, "classData", "mainState"), { [`booksRead.${authorId}`]: increment(-1) }).catch(()=>{});
+                if (curCount > 0) {
+                  await updateDoc(doc(db, "classData", "mainState"), { [`booksRead.${authorId}`]: increment(-1) }).catch(()=>{});
+                }
                 invalidateCache();
             }
             setConfirmModal(null); showToast(!isDraft ? "삭제 및 1권 차감이 완료되었습니다." : "삭제되었습니다.");
@@ -1324,7 +1348,7 @@
 
       const renderStudentReadingStatus = () => {
         const sortedStudents = [...students].sort((a, b) => a.id - b.id);
-        const maxBooks = Math.max(...Object.values(booksRead || {}), 5);
+        const maxBooks = Math.max(...Object.values(booksRead || {}).map(v => Number(v) || 0), 5);
         return (
           <div className="bg-white rounded-xl shadow-sm border border-emerald-200 overflow-hidden flex flex-col h-full min-h-[250px]">
             <h3 className="text-xs font-black text-emerald-800 flex items-center gap-1.5 p-2.5 bg-emerald-50 border-b border-emerald-100 shrink-0"><BookOpen className="w-3.5 h-3.5 text-emerald-500" /> 학생별 책 읽기 기여도</h3>
