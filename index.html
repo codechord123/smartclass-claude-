@@ -432,11 +432,13 @@
           await setDoc(doc(db, "classData", "seating"), pick(['classroomSeating','secretClassroomSeating','lockedSeats','gridConfig']), { merge: true });
           await setDoc(doc(db, "classData", "teacherPrivate"), pick(['teacherMemo','teacherMemoFontSize']), { merge: true });
 
-          // 3) records 날짜별 분리
+          // 3) records 날짜별 분리 (병렬 처리로 속도 확보)
           if (data.records && typeof data.records === 'object') {
-            for (const [date, dayObj] of Object.entries(data.records)) {
-              if (dayObj && typeof dayObj === 'object') await setDoc(doc(db, "records", date), dayObj);
-            }
+            await Promise.all(
+              Object.entries(data.records)
+                .filter(([, dayObj]) => dayObj && typeof dayObj === 'object')
+                .map(([date, dayObj]) => setDoc(doc(db, "records", date), dayObj))
+            );
           }
 
           // 4) 완료 플래그 (mainState 본체는 백업으로 보존)
