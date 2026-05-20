@@ -738,7 +738,7 @@
         
         setClassroomHistory(newHistory);
         await setDoc(doc(db, "savedClassroomSeating", nameToSave), { layout: layoutData });
-        await updateDoc(doc(db, "classData", "live"), { classroomHistory: newHistory });
+        await setDoc(doc(db, "classData", "live"), { classroomHistory: newHistory }, { merge: true });
         setSeatingSaveName(""); showToast(`💾 '${nameToSave}' 저장 및 통계 반영 완료!`);
       };
 
@@ -893,7 +893,7 @@
                 const curCount = (booksRead || {})[authorId] || 0;
                 setBooksRead(prev => ({ ...prev, [authorId]: Math.max(0, (prev[authorId] || 0) - 1) }));
                 if (curCount > 0) {
-                  await updateDoc(doc(db, "classData", "live"), { [`booksRead.${authorId}`]: increment(-1) }).catch(()=>{});
+                  await setDoc(doc(db, "classData", "live"), { booksRead: { [authorId]: increment(-1) } }, { merge: true }).catch(()=>{});
                 }
                 invalidateCache();
             }
@@ -1072,7 +1072,9 @@
             Object.keys(updatedRecords).forEach(date => { Object.keys(updatedRecords[date]).forEach(checkerId => { Object.keys(updatedRecords[date][checkerId]).forEach(targetId => { const val = updatedRecords[date][checkerId][targetId]; if (val === oldRole) updatedRecords[date][checkerId][targetId] = newRole; else if (val === "[-] " + oldRole) updatedRecords[date][checkerId][targetId] = "[-] " + newRole; }); }); });
             setRecords(updatedRecords); 
           }
-          saveToDB({ students: updatedStudents, rolePool: updatedPool, records: updatedRecords }); showToast(`'${oldRole}'이(가) '${newRole}'(으)로 교체되었습니다.`);
+          const payload = { students: updatedStudents, rolePool: updatedPool };
+          if (updateHistory) payload.records = updatedRecords;
+          saveToDB(payload); showToast(`'${oldRole}'이(가) '${newRole}'(으)로 교체되었습니다.`);
         }
       };
 
@@ -1089,7 +1091,9 @@
               Object.keys(updatedRecords).forEach(date => { Object.keys(updatedRecords[date]).forEach(checkerId => { Object.keys(updatedRecords[date][checkerId]).forEach(targetId => { const val = updatedRecords[date][checkerId][targetId]; if (val === oldName) updatedRecords[date][checkerId][targetId] = newName; else if (val === "[-] " + oldName) updatedRecords[date][checkerId][targetId] = "[-] " + newName; }); }); });
               setRecords(updatedRecords); 
             }
-            saveToDB({ students: updatedStudents, rolePool: updatedPool, records: updatedRecords }); setRenameOldRole(""); setRenameNewRole(""); setConfirmModal(null); showToast(`성공적으로 교체되었습니다.`);
+            const payload = { students: updatedStudents, rolePool: updatedPool };
+            if (renameUpdateHistory) payload.records = updatedRecords;
+            saveToDB(payload); setRenameOldRole(""); setRenameNewRole(""); setConfirmModal(null); showToast(`성공적으로 교체되었습니다.`);
           }
         });
       };
@@ -1240,7 +1244,7 @@
 
         try {
           await updateDoc(doc(db, "coinRequests", String(req.id)), { status: 'approved', processDate });
-          await updateDoc(doc(db, "classData", "live"), { [`spentTokens.${req.studentId}`]: increment(req.price) });
+          await setDoc(doc(db, "classData", "live"), { spentTokens: { [req.studentId]: increment(req.price) } }, { merge: true });
           showToast(`${req.studentName}의 요청을 승인했습니다.`);
         } catch (e) { showToast("승인 처리 중 오류 발생"); }
       };
