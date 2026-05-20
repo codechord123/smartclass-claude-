@@ -295,20 +295,46 @@
 
       useEffect(() => {
         if (!dbUser || !db) return;
-        const qSug = query(collection(db, "suggestions"), orderBy("id", "desc"), limit(suggestionLimit));
+        const qSug = query(collection(db, "suggestions"));
         const unsubSug = onSnapshot(qSug, (snap) => {
-          setSuggestions(snap.docs.map(d => d.data()));
-          setHasMoreSuggestions(snap.docs.length === suggestionLimit);
+          const all = snap.docs.map(d => {
+            const data = d.data();
+            return { ...data, id: data.id ?? d.id };
+          });
+          const sortKey = (v) => {
+            const s = String(v ?? "");
+            const n = parseInt(s, 10);
+            return Number.isFinite(n) ? n : 0;
+          };
+          all.sort((a, b) => sortKey(b.id) - sortKey(a.id));
+          setSuggestions(all.slice(0, suggestionLimit));
+          setHasMoreSuggestions(all.length > suggestionLimit);
+        }, (err) => {
+          console.error("건의게시판 불러오기 에러:", err);
+          showToast("건의게시판을 불러올 수 없습니다. 새로고침 해주세요.");
         });
         return () => unsubSug();
       }, [dbUser, suggestionLimit]);
 
       useEffect(() => {
         if (!dbUser || !db) return;
-        const qRep = query(collection(db, "readingReports"), orderBy("id", "desc"), limit(reportLimit));
+        const qRep = query(collection(db, "readingReports"));
         const unsubRep = onSnapshot(qRep, (snap) => {
-          setReadingReports(snap.docs.map(d => d.data()));
-          setHasMoreReports(snap.docs.length === reportLimit);
+          const all = snap.docs.map(d => {
+            const data = d.data();
+            return { ...data, id: data.id ?? d.id };
+          });
+          const sortKey = (v) => {
+            const s = String(v ?? "");
+            const n = parseInt(s, 10);
+            return Number.isFinite(n) ? n : 0;
+          };
+          all.sort((a, b) => sortKey(b.id) - sortKey(a.id));
+          setReadingReports(all.slice(0, reportLimit));
+          setHasMoreReports(all.length > reportLimit);
+        }, (err) => {
+          console.error("독서감상문 불러오기 에러:", err);
+          showToast("독서감상문을 불러올 수 없습니다. 새로고침 해주세요.");
         });
         return () => unsubRep();
       }, [dbUser, reportLimit]);
