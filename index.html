@@ -333,95 +333,158 @@
         }
       }, [dbUser, authStatus, teacherTab, studentTab, coinManageDate]);
 
-      const applyMainState = (data) => {
+      // =========================================================
+      // 2. 데이터 레이어 (Firestore)
+      //    문서 구조:
+      //      classData/config         - 거의 안 바뀌는 설정류 (학생 명단, 역할 배점, 상점 등)
+      //      classData/live           - 자주 갱신되는 카운터 (booksRead, spentTokens, ...)
+      //      classData/seating        - 자리 배치 정보
+      //      classData/teacherPrivate - 선생님 전용 (메모/글자크기)
+      //      records/{YYYY-MM-DD}     - 날짜별 평가 기록 (오늘 문서만 onSnapshot 구독)
+      //      classData/mainState      - 레거시 백업 (마이그레이션 후엔 사용 안 함)
+      // =========================================================
+      const FIELD_TO_DOC = {
+        students: 'config', teacherPassword: 'config', rolePool: 'config',
+        roleSettings: 'config', silverRewards: 'config', goldRewards: 'config',
+        shopItems: 'config', customLinks: 'config', overviewConfig: 'config',
+        rankingConfigs: 'config', readingCharLimit: 'config',
+        booksRead: 'live', spentTokens: 'live', spentClassGoldTokens: 'live',
+        classroomHistory: 'live',
+        classroomSeating: 'seating', secretClassroomSeating: 'seating',
+        lockedSeats: 'seating', gridConfig: 'seating',
+        teacherMemo: 'teacherPrivate', teacherMemoFontSize: 'teacherPrivate',
+      };
+
+      const applyConfig = (data) => {
         if (data.teacherPassword !== undefined) setTeacherPassword(String(data.teacherPassword));
         if (data.students && Array.isArray(data.students) && data.students.length > 0) {
           const mergedStudents = data.students.map((s) => ({ ...s, isLocked: s.isLocked || false, gender: genderMap[s.name] || s.gender || "M" }));
-          setStudents(mergedStudents); 
+          setStudents(mergedStudents);
         }
-        setRecords(data.records || {});
-        setSpentTokens(data.spentTokens || {});
-        if (data.spentClassGoldTokens !== undefined) setSpentClassGoldTokens(data.spentClassGoldTokens);
         if (data.silverRewards) setSilverRewards(data.silverRewards);
         if (data.goldRewards) setGoldRewards(data.goldRewards);
-        if (data.rolePool) setRolePool(data.rolePool); 
-        if (data.gridConfig) setGridConfig(data.gridConfig);
-        setBooksRead(data.booksRead || {});
-        if (data.classroomSeating) setClassroomSeating(data.classroomSeating);
-        if (data.secretClassroomSeating) setSecretClassroomSeating(data.secretClassroomSeating);
-        if (data.lockedSeats) setLockedSeats(data.lockedSeats);
-        setClassroomHistory(data.classroomHistory || {});
+        if (data.rolePool) setRolePool(data.rolePool);
         if (data.readingCharLimit !== undefined) setReadingCharLimit(data.readingCharLimit);
-        
-        // 선생님 메모는 onBlur 자동 저장이라 입력 중 onSnapshot 이 덮어쓸 수 있음.
-        // 최초 로드이거나 textarea 가 비활성 상태일 때만 동기화.
-        if (data.teacherMemo !== undefined && (isFirstApplyRef.current || !teacherMemoFocusRef.current)) {
-          setTeacherMemo(data.teacherMemo);
-        }
-        if (data.teacherMemoFontSize !== undefined) {
-           let parsedSize = parseInt(data.teacherMemoFontSize, 10);
-           if (isNaN(parsedSize)) parsedSize = 14;
-           setTeacherMemoFontSize(parsedSize);
-        }
-        isFirstApplyRef.current = false;
-        
         if (data.roleSettings) setRoleSettings(data.roleSettings);
         if (data.shopItems) setShopItems(data.shopItems);
         if (data.customLinks) setCustomLinks(data.customLinks);
-
         if (data.overviewConfig) setOverviewConfig({ ...defaultOverviewConfig, ...data.overviewConfig });
         if (data.rankingConfigs) setRankingConfigs(data.rankingConfigs);
       };
 
-      useEffect(() => {
-        if (!dbUser || !db) return;
-        const docRef = doc(db, "classData", "mainState");
-        let migrationDone = false;
-        let migrationRunning = false;
+      const applyLive = (data) => {
+        setSpentTokens(data.spentTokens || {});
+        if (data.spentClassGoldTokens !== undefined) setSpentClassGoldTokens(data.spentClassGoldTokens);
+        setBooksRead(data.booksRead || {});
+        setClassroomHistory(data.classroomHistory || {});
+      };
 
-        const unsub = onSnapshot(docRef, async (snap) => {
-          if (!snap.exists()) { setIsDBLoaded(true); return; }
-          const data = snap.data();
+      const applySeating = (data) => {
+        if (data.gridConfig) setGridConfig(data.gridConfig);
+        if (data.classroomSeating) setClassroomSeating(data.classroomSeating);
+        if (data.secretClassroomSeating) setSecretClassroomSeating(data.secretClassroomSeating);
+        if (data.lockedSeats) setLockedSeats(data.lockedSeats);
+      };
 
-          // 최초 1회: 레거시 배열 데이터를 별도 컬렉션으로 분리하는 마이그레이션 수행.
-          if (!migrationDone && !migrationRunning) {
-            migrationRunning = true;
-            try {
-              const updates = {};
-              let needsUpdate = false;
-              if (data.suggestions && Array.isArray(data.suggestions)) {
-                for (const s of data.suggestions) { await setDoc(doc(db, "suggestions", String(s.id)), s); }
-                updates.suggestions = deleteField(); needsUpdate = true;
-              }
-              if (data.readingReports && Array.isArray(data.readingReports)) {
-                for (const r of data.readingReports) { await setDoc(doc(db, "readingReports", String(r.id)), r); }
-                updates.readingReports = deleteField(); needsUpdate = true;
-              }
-              if (data.savedClassroomSeating) {
-                for (const [name, layout] of Object.entries(data.savedClassroomSeating)) { await setDoc(doc(db, "savedClassroomSeating", name), { layout }); }
-                updates.savedClassroomSeating = deleteField(); needsUpdate = true;
-              }
-              if (data.lunchHistory) {
-                for (const [date, hist] of Object.entries(data.lunchHistory)) { await setDoc(doc(db, "lunchHistory", date), hist); }
-                updates.lunchHistory = deleteField(); needsUpdate = true;
-              }
-              if (needsUpdate) await updateDoc(docRef, updates);
-            } catch (e) { console.error("migration failed", e); }
-            migrationDone = true;
-            migrationRunning = false;
+      const applyTeacherPrivate = (data) => {
+        if (data.teacherMemo !== undefined && (isFirstApplyRef.current || !teacherMemoFocusRef.current)) {
+          setTeacherMemo(data.teacherMemo);
+        }
+        if (data.teacherMemoFontSize !== undefined) {
+          let parsedSize = parseInt(data.teacherMemoFontSize, 10);
+          if (isNaN(parsedSize)) parsedSize = 14;
+          setTeacherMemoFontSize(parsedSize);
+        }
+        isFirstApplyRef.current = false;
+      };
+
+      // 레거시 mainState → 분리된 문서들로 1회 마이그레이션
+      const runMigrationOnce = async () => {
+        try {
+          const mainSnap = await getDoc(doc(db, "classData", "mainState"));
+          if (!mainSnap.exists()) return;
+          const data = mainSnap.data();
+          if (data.migratedAt) return; // 이미 완료
+
+          // 1) 레거시 배열 → 별도 컬렉션
+          const legacyUpdates = {};
+          if (Array.isArray(data.suggestions)) {
+            for (const s of data.suggestions) await setDoc(doc(db, "suggestions", String(s.id)), s);
+            legacyUpdates.suggestions = deleteField();
+          }
+          if (Array.isArray(data.readingReports)) {
+            for (const r of data.readingReports) await setDoc(doc(db, "readingReports", String(r.id)), r);
+            legacyUpdates.readingReports = deleteField();
+          }
+          if (data.savedClassroomSeating) {
+            for (const [name, layout] of Object.entries(data.savedClassroomSeating)) await setDoc(doc(db, "savedClassroomSeating", name), { layout });
+            legacyUpdates.savedClassroomSeating = deleteField();
+          }
+          if (data.lunchHistory) {
+            for (const [date, hist] of Object.entries(data.lunchHistory)) await setDoc(doc(db, "lunchHistory", date), hist);
+            legacyUpdates.lunchHistory = deleteField();
           }
 
-          applyMainState(data);
-          setIsDBLoaded(true);
-        }, (err) => {
-          console.error("mainState 구독 실패", err);
-          setIsDBLoaded(true);
-        });
+          // 2) 필드 분리
+          const pick = (keys) => Object.fromEntries(keys.filter(k => data[k] !== undefined).map(k => [k, data[k]]));
+          await setDoc(doc(db, "classData", "config"), pick(['teacherPassword','students','rolePool','roleSettings','silverRewards','goldRewards','shopItems','customLinks','overviewConfig','rankingConfigs','readingCharLimit']), { merge: true });
+          await setDoc(doc(db, "classData", "live"), pick(['booksRead','spentTokens','spentClassGoldTokens','classroomHistory']), { merge: true });
+          await setDoc(doc(db, "classData", "seating"), pick(['classroomSeating','secretClassroomSeating','lockedSeats','gridConfig']), { merge: true });
+          await setDoc(doc(db, "classData", "teacherPrivate"), pick(['teacherMemo','teacherMemoFontSize']), { merge: true });
 
-        loadSavedSeating();
-        loadLunchHistory();
+          // 3) records 날짜별 분리
+          if (data.records && typeof data.records === 'object') {
+            for (const [date, dayObj] of Object.entries(data.records)) {
+              if (dayObj && typeof dayObj === 'object') await setDoc(doc(db, "records", date), dayObj);
+            }
+          }
 
-        return () => unsub();
+          // 4) 완료 플래그 (mainState 본체는 백업으로 보존)
+          await updateDoc(doc(db, "classData", "mainState"), { ...legacyUpdates, migratedAt: Date.now() });
+        } catch (e) {
+          console.error("마이그레이션 실패", e);
+        }
+      };
+
+      useEffect(() => {
+        if (!dbUser || !db) return;
+        let unsubs = [];
+        let mounted = true;
+
+        (async () => {
+          setIsDBLoaded(false);
+          await runMigrationOnce();
+          if (!mounted) return;
+
+          // 과거 records 1회 일괄 로드 (학기 누적 점수 계산용)
+          try {
+            const allRecSnap = await getDocs(collection(db, "records"));
+            if (mounted) {
+              const map = {};
+              allRecSnap.docs.forEach(d => { map[d.id] = d.data() || {}; });
+              setRecords(map);
+            }
+          } catch (e) { console.error("records 일괄 로드 실패", e); }
+          if (!mounted) return;
+
+          // 분리된 문서 구독 (변경 빈도 낮음)
+          unsubs.push(onSnapshot(doc(db, "classData", "config"), s => { if (s.exists()) applyConfig(s.data()); }));
+          unsubs.push(onSnapshot(doc(db, "classData", "live"), s => { if (s.exists()) applyLive(s.data()); }));
+          unsubs.push(onSnapshot(doc(db, "classData", "seating"), s => { if (s.exists()) applySeating(s.data()); }));
+          unsubs.push(onSnapshot(doc(db, "classData", "teacherPrivate"), s => { if (s.exists()) applyTeacherPrivate(s.data()); }));
+
+          // 오늘의 records 만 실시간 구독 (가장 자주 갱신되므로 작은 문서로 한정)
+          const today = getLocalDateString(new Date());
+          unsubs.push(onSnapshot(doc(db, "records", today), s => {
+            setRecords(prev => ({ ...prev, [today]: s.exists() ? (s.data() || {}) : {} }));
+          }));
+
+          loadSavedSeating();
+          loadLunchHistory();
+          setIsDBLoaded(true);
+        })();
+
+        return () => { mounted = false; unsubs.forEach(u => u()); };
       }, [dbUser]);
 
       useEffect(() => {
@@ -431,12 +494,35 @@
         }
       }, [students, rolePool, teacherTab]);
 
+      // 필드명을 보고 적절한 문서에 분산 저장. records 는 날짜별로 쪼개 저장.
       const saveToDB = async (updateObj) => {
         if (!dbUser || !db) return;
-        try { 
-            await setDoc(doc(db, "classData", "mainState"), updateObj, { merge: true }); 
-            invalidateCache(); 
-        } catch (e) { showToast("데이터베이스 저장 실패"); }
+        const groups = {};
+        let recordsObj = null;
+        for (const [k, v] of Object.entries(updateObj)) {
+          if (k === 'records') { recordsObj = v; continue; }
+          const docName = FIELD_TO_DOC[k];
+          if (!docName) { console.warn("[saveToDB] 알 수 없는 필드:", k); continue; }
+          (groups[docName] = groups[docName] || {})[k] = v;
+        }
+        try {
+          const writes = [];
+          for (const [docName, fields] of Object.entries(groups)) {
+            writes.push(setDoc(doc(db, "classData", docName), fields, { merge: true }));
+          }
+          if (recordsObj) {
+            if (Object.keys(recordsObj).length === 0) {
+              // 전체 초기화 의도 → records 컬렉션 통째로 삭제
+              const snap = await getDocs(collection(db, "records"));
+              await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+            } else {
+              for (const [date, dayObj] of Object.entries(recordsObj)) {
+                writes.push(setDoc(doc(db, "records", date), dayObj));
+              }
+            }
+          }
+          await Promise.all(writes);
+        } catch (e) { console.error(e); showToast("데이터베이스 저장 실패"); }
       };
 
       const showToast = (msg) => { setToastMsg(msg); setTimeout(() => setToastMsg(""), 3000); };
@@ -496,13 +582,11 @@
         if (next === cur) { showToast("더 이상 차감할 수 없습니다."); return; }
         setBooksRead(prev => ({ ...prev, [studentId]: next }));
         try {
-            await updateDoc(doc(db, "classData", "mainState"), {
+            await updateDoc(doc(db, "classData", "live"), {
                 [`booksRead.${studentId}`]: increment(next - cur)
             });
-            invalidateCache();
         } catch (e) {
-            await setDoc(doc(db, "classData", "mainState"), { booksRead: { [studentId]: next } }, { merge: true });
-            invalidateCache();
+            await setDoc(doc(db, "classData", "live"), { booksRead: { [studentId]: next } }, { merge: true });
         }
         showToast(`독서 마라톤 ${delta>0?'+1권 처리됨':'-1권 차감됨'}`);
       };
@@ -652,8 +736,7 @@
         
         setClassroomHistory(newHistory);
         await setDoc(doc(db, "savedClassroomSeating", nameToSave), { layout: layoutData });
-        await updateDoc(doc(db, "classData", "mainState"), { classroomHistory: newHistory });
-        invalidateCache(); 
+        await updateDoc(doc(db, "classData", "live"), { classroomHistory: newHistory });
         setSeatingSaveName(""); showToast(`💾 '${nameToSave}' 저장 및 통계 반영 완료!`);
       };
 
@@ -775,8 +858,8 @@
 
         if (willCountNow) {
             setBooksRead(prev => ({ ...prev, [s.id]: (prev[s.id] || 0) + 1 }));
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`booksRead.${s.id}`]: increment(1) }); invalidateCache(); }
-            catch(e) { await setDoc(doc(db, "classData", "mainState"), { booksRead: { [s.id]: (booksRead[s.id] || 0) + 1 } }, { merge: true }); invalidateCache(); }
+            try { await updateDoc(doc(db, "classData", "live"), { [`booksRead.${s.id}`]: increment(1) }); }
+            catch(e) { await setDoc(doc(db, "classData", "live"), { booksRead: { [s.id]: (booksRead[s.id] || 0) + 1 } }, { merge: true }); }
         }
 
         if (saveAsDraft) { setEditingReportId(reportIdToSave); showToast("임시저장되었습니다. 화면에서 이어서 작성하세요! 💾"); } 
@@ -808,7 +891,7 @@
                 const curCount = (booksRead || {})[authorId] || 0;
                 setBooksRead(prev => ({ ...prev, [authorId]: Math.max(0, (prev[authorId] || 0) - 1) }));
                 if (curCount > 0) {
-                  await updateDoc(doc(db, "classData", "mainState"), { [`booksRead.${authorId}`]: increment(-1) }).catch(()=>{});
+                  await updateDoc(doc(db, "classData", "live"), { [`booksRead.${authorId}`]: increment(-1) }).catch(()=>{});
                 }
                 invalidateCache();
             }
@@ -911,8 +994,8 @@
         setRecords((prev) => { const safePrev = prev||{}; const dayData = safePrev[date] || {}; const checkerData = dayData[checkerId] || {}; return { ...safePrev, [date]: { ...dayData, [checkerId]: { ...checkerData, [studentId]: newVal } } }; });
         
         if (dbUser && db) {
-          try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${date}.${checkerId}.${studentId}`]: increment(delta) }); invalidateCache(); if (delta > 0) showToast(`+1점 처리되었습니다.`); if (delta < 0) showToast(`-1점 처리되었습니다.`); } 
-          catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [checkerId]: { [studentId]: newVal } } } }, { merge: true }); invalidateCache(); }
+          try { await updateDoc(doc(db, "records", date), { [`${checkerId}.${studentId}`]: increment(delta) }); if (delta > 0) showToast(`+1점 처리되었습니다.`); if (delta < 0) showToast(`-1점 처리되었습니다.`); }
+          catch (e) { await setDoc(doc(db, "records", date), { [checkerId]: { [studentId]: newVal } }, { merge: true }); }
         }
       };
 
@@ -928,18 +1011,18 @@
            return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } 
         });
         
-        if (dbUser && db) { 
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${today}.${checkerId}.${targetId}`]: newVal }); invalidateCache(); } 
-            catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); invalidateCache(); } 
+        if (dbUser && db) {
+            try { await updateDoc(doc(db, "records", today), { [`${checkerId}.${targetId}`]: newVal }); }
+            catch (e) { await setDoc(doc(db, "records", today), { [checkerId]: { [targetId]: newVal } }, { merge: true }); }
         }
       };
 
       const setTurtleRecord = async (checkerId, targetId, newPts) => {
         const today = getLocalDateString(new Date()); let newVal = false; if (newPts !== 0) newVal = `[거북이] ${newPts}`;
         setRecords((prev) => { const safePrev = prev||{}; return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } });
-        if (dbUser && db) { 
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${today}.${checkerId}.${targetId}`]: newVal }); invalidateCache(); } 
-            catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); invalidateCache(); } 
+        if (dbUser && db) {
+            try { await updateDoc(doc(db, "records", today), { [`${checkerId}.${targetId}`]: newVal }); }
+            catch (e) { await setDoc(doc(db, "records", today), { [checkerId]: { [targetId]: newVal } }, { merge: true }); }
         }
       };
 
@@ -1155,8 +1238,7 @@
 
         try {
           await updateDoc(doc(db, "coinRequests", String(req.id)), { status: 'approved', processDate });
-          await updateDoc(doc(db, "classData", "mainState"), { [`spentTokens.${req.studentId}`]: increment(req.price) });
-          invalidateCache();
+          await updateDoc(doc(db, "classData", "live"), { [`spentTokens.${req.studentId}`]: increment(req.price) });
           showToast(`${req.studentName}의 요청을 승인했습니다.`);
         } catch (e) { showToast("승인 처리 중 오류 발생"); }
       };
