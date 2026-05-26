@@ -355,6 +355,33 @@
         }
       }, [dbUser, authStatus, teacherTab, studentTab, coinManageDate]);
 
+      // 펼쳐서 토론 중인 글 1개만 실시간 구독 (전체 재조회 없이 댓글만 실시간 갱신)
+      useEffect(() => {
+        if (!dbUser || !db || !selectedSuggestionId) return;
+        const ref = doc(db, "suggestions", String(selectedSuggestionId));
+        const unsub = onSnapshot(ref, (snap) => {
+          if (!snap.exists()) return;
+          const data = { ...snap.data(), id: snap.data().id ?? snap.id };
+          setSuggestions(prev => prev.some(s => String(s.id) === String(data.id))
+            ? prev.map(s => String(s.id) === String(data.id) ? data : s)
+            : sortByIdDesc([data, ...prev]));
+        }, (err) => console.error("건의글 실시간 구독 에러:", err));
+        return () => unsub();
+      }, [dbUser, selectedSuggestionId]);
+
+      useEffect(() => {
+        if (!dbUser || !db || !expandedReportId) return;
+        const ref = doc(db, "readingReports", String(expandedReportId));
+        const unsub = onSnapshot(ref, (snap) => {
+          if (!snap.exists()) return;
+          const data = { ...snap.data(), id: snap.data().id ?? snap.id };
+          setReadingReports(prev => prev.some(r => String(r.id) === String(data.id))
+            ? prev.map(r => String(r.id) === String(data.id) ? data : r)
+            : sortByIdDesc([data, ...prev]));
+        }, (err) => console.error("독서감상문 실시간 구독 에러:", err));
+        return () => unsub();
+      }, [dbUser, expandedReportId]);
+
       const applyMainState = (data) => {
         if (data.teacherPassword !== undefined) setTeacherPassword(String(data.teacherPassword));
         if (data.students && Array.isArray(data.students) && data.students.length > 0) {
