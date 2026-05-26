@@ -809,13 +809,13 @@
             catch(e) { await setDoc(doc(db, "classData", "mainState"), { booksRead: { [s.id]: 1 } }, { merge: true }); invalidateCache(); }
         }
 
+        setReadingReports(prev => sortByIdDesc([nR, ...prev.filter(r => String(r.id) !== String(nR.id))]));
         if (saveAsDraft) { setEditingReportId(reportIdToSave); showToast("임시저장되었습니다. 화면에서 이어서 작성하세요! 💾"); }
         else {
             setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setEditingReportId(null); setIsReportAnonymous(false);
             showToast(editingReportId ? "감상문이 정식 수정 및 등록되었습니다! 🐢" : "감상문이 등록되고 1권이 누적되었습니다! 🐢");
             if (authStatus.type === "student") setStudentReadingSubTab("board");
         }
-        await loadReadingReports();
       };
 
       const startEditingReport = (report) => {
@@ -833,6 +833,7 @@
         setConfirmModal({ title: "독서 감상문 삭제", message: isDraft ? "임시저장된 감상문을 삭제하시겠습니까?" : "정식 등록된 감상문을 삭제하시겠습니까?\n(⚠️ 삭제 시 누적된 독서 마라톤 1권도 함께 차감됩니다)",
           onConfirm: async () => {
             setEditingReportId(prevId => { if (String(prevId) === targetIdStr) { setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setIsReportAnonymous(false); return null; } return prevId; });
+            setReadingReports(prev => prev.filter(r => String(r.id) !== targetIdStr));
             await deleteDoc(doc(db, "readingReports", targetIdStr));
             if (!isDraft) {
                 setBooksRead(prev => ({ ...prev, [authorId]: Math.max(0, (prev[authorId] || 0) - 1) }));
@@ -840,7 +841,6 @@
                 invalidateCache();
             }
             setConfirmModal(null); showToast(!isDraft ? "삭제 및 1권 차감이 완료되었습니다." : "삭제되었습니다.");
-            await loadReadingReports();
           },
         });
       };
@@ -852,8 +852,8 @@
         const newComment = { id: Date.now(), studentId: authorId, studentName: authorName, text, date: new Date().toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) };
 
         setReportCommentInputs({ ...reportCommentInputs, [reportId]: "" });
+        setReadingReports(prev => prev.map(r => String(r.id) === String(reportId) ? { ...r, comments: [...(r.comments || []), newComment] } : r));
         await updateDoc(doc(db, "readingReports", String(reportId)), { comments: arrayUnion(newComment) });
-        await loadReadingReports();
       };
 
       const deleteReportComment = (reportId, commentId) => {
@@ -863,10 +863,10 @@
             const targetReport = readingReports.find(r => String(r.id) === targetReportIdStr); if(!targetReport) return;
             const commentsToRemove = (targetReport.comments || []).filter(c => String(c.id) === targetCommentIdStr);
             if (commentsToRemove.length > 0) {
+               setReadingReports(prev => prev.map(r => String(r.id) === targetReportIdStr ? { ...r, comments: (r.comments || []).filter(c => !commentsToRemove.includes(c)) } : r));
                await updateDoc(doc(db, "readingReports", targetReportIdStr), { comments: arrayRemove(...commentsToRemove) });
             }
             setConfirmModal(null); showToast("삭제되었습니다.");
-            await loadReadingReports();
           }
         });
       };
@@ -887,8 +887,8 @@
         };
         setPollTitle(""); setPollOptions(["", ""]); setPollIsMultiple(false);
         showToast("투표가 등록되었습니다. 📊");
+        setPolls(prev => sortByIdDesc([newPoll, ...prev]));
         await setDoc(doc(db, "polls", String(newPoll.id)), newPoll);
-        await loadPolls();
       };
 
       const submitVote = async (poll) => {
@@ -896,9 +896,9 @@
         const selected = pollSelections[poll.id];
         const chosen = poll.isMultiple ? (selected || []) : (selected !== undefined && selected !== null ? [selected] : []);
         if (chosen.length === 0) return showToast("선택지를 골라주세요.");
+        setPolls(prev => prev.map(p => String(p.id) === String(poll.id) ? { ...p, votes: { ...(p.votes || {}), [myInfo.id]: chosen } } : p));
         await updateDoc(doc(db, "polls", String(poll.id)), { [`votes.${myInfo.id}`]: chosen });
         showToast("투표가 완료되었습니다! ✅");
-        await loadPolls();
       };
 
       const togglePollStatus = (poll) => {
@@ -907,9 +907,9 @@
           title: closing ? "투표 마감" : "투표 재개",
           message: closing ? "투표를 마감하시겠습니까?\n마감하면 학생에게 결과가 공개됩니다." : "투표를 다시 열겠습니까?",
           onConfirm: async () => {
+            setPolls(prev => prev.map(p => String(p.id) === String(poll.id) ? { ...p, status: closing ? "closed" : "open" } : p));
             await updateDoc(doc(db, "polls", String(poll.id)), { status: closing ? "closed" : "open" });
             setConfirmModal(null); showToast(closing ? "투표가 마감되었습니다." : "투표가 재개되었습니다.");
-            await loadPolls();
           }
         });
       };
@@ -917,7 +917,7 @@
       const deletePoll = (id) => {
         const targetIdStr = String(id);
         setConfirmModal({ title: "투표 삭제", message: "이 투표를 완전히 삭제하시겠습니까?",
-          onConfirm: async () => { await deleteDoc(doc(db, "polls", targetIdStr)); setConfirmModal(null); showToast("삭제되었습니다."); await loadPolls(); }
+          onConfirm: async () => { setPolls(prev => prev.filter(p => String(p.id) !== targetIdStr)); await deleteDoc(doc(db, "polls", targetIdStr)); setConfirmModal(null); showToast("삭제되었습니다."); }
         });
       };
 
@@ -942,17 +942,17 @@
         
         setSuggestionTitle(""); setSuggestionInput(""); setIsAnonymous(false); setIsAnnouncement(false);
         showToast(isAnnounce ? "공지사항이 등록되었습니다." : (anon ? "비공개 의견이 전달되었습니다." : "의견이 등록되었습니다."));
+        setSuggestions(prev => sortByIdDesc([newSug, ...prev]));
         await setDoc(doc(db, "suggestions", String(newSug.id)), newSug);
-        await loadSuggestions();
       };
 
       const deleteSuggestion = (id) => {
         const targetIdStr = String(id);
         setConfirmModal({ title: "게시글 삭제", message: "이 글을 완전히 삭제하시겠습니까?",
             onConfirm: async () => {
+                setSuggestions(prev => prev.filter(s => String(s.id) !== targetIdStr));
                 await deleteDoc(doc(db, "suggestions", targetIdStr)); setConfirmModal(null); showToast("삭제되었습니다.");
                 if(selectedSuggestionId === id) setSelectedSuggestionId(null);
-                await loadSuggestions();
             }
         });
       };
@@ -963,10 +963,10 @@
           title: "공지사항 상태 변경",
           message: currentStatus ? "이 게시글을 공지에서 내리시겠습니까?\n(일반 게시글로 전환되어 게시판 목록에 표시됩니다.)" : "이 게시글을 공지사항으로 등록하시겠습니까?\n(공지사항 영역에 강조 표시됩니다.)",
           onConfirm: async () => {
+            setSuggestions(prev => prev.map(s => String(s.id) === String(id) ? { ...s, isAnnouncement: !currentStatus } : s));
             await updateDoc(doc(db, "suggestions", String(id)), { isAnnouncement: !currentStatus });
             setConfirmModal(null);
             showToast(currentStatus ? "일반 게시글로 전환되었습니다." : "공지사항으로 등록되었습니다.");
-            await loadSuggestions();
           }
         });
       };
@@ -978,8 +978,8 @@
         const newComment = { id: Date.now(), studentId: authorId, studentName: authorName, text, date: new Date().toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }), replyTo: replyingTo?.sugId === sugId ? replyingTo.commentId : null };
 
         setCommentInputs({ ...commentInputs, [sugId]: "" }); setReplyingTo(null);
+        setSuggestions(prev => prev.map(s => String(s.id) === String(sugId) ? { ...s, comments: [...(s.comments || []), newComment] } : s));
         await updateDoc(doc(db, "suggestions", String(sugId)), { comments: arrayUnion(newComment) });
-        await loadSuggestions();
       };
 
       const deleteComment = (sugId, commentId) => {
@@ -989,10 +989,10 @@
             const targetSug = suggestions.find(s => String(s.id) === targetSugIdStr); if(!targetSug) return;
             const commentsToRemove = (targetSug.comments || []).filter(c => String(c.id) === targetCommentIdStr || String(c.replyTo) === targetCommentIdStr);
             if (commentsToRemove.length > 0) {
+               setSuggestions(prev => prev.map(s => String(s.id) === targetSugIdStr ? { ...s, comments: (s.comments || []).filter(c => !commentsToRemove.includes(c)) } : s));
                await updateDoc(doc(db, "suggestions", targetSugIdStr), { comments: arrayRemove(...commentsToRemove) });
             }
             if (replyingTo?.commentId === commentId) setReplyingTo(null); setConfirmModal(null); showToast("삭제되었습니다.");
-            await loadSuggestions();
           }
         });
       };
