@@ -129,6 +129,12 @@
       const [readingSearch, setReadingSearch] = useState("");
       const [suggestionSearch, setSuggestionSearch] = useState("");
 
+      const [polls, setPolls] = useState([]);
+      const [pollTitle, setPollTitle] = useState("");
+      const [pollOptions, setPollOptions] = useState(["", ""]);
+      const [pollIsMultiple, setPollIsMultiple] = useState(false);
+      const [pollSelections, setPollSelections] = useState({});
+
       const [seatingTab, setSeatingTab] = useState("classroom");
       const [classroomSeating, setClassroomSeating] = useState(new Array(35).fill(null));
       const [secretClassroomSeating, setSecretClassroomSeating] = useState(new Array(35).fill(null));
@@ -332,6 +338,22 @@
           showToast("독서감상문을 불러올 수 없습니다. 새로고침 해주세요.");
         });
         return () => unsubRep();
+      }, [dbUser]);
+
+      useEffect(() => {
+        if (!dbUser || !db) return;
+        const qPoll = query(collection(db, "polls"));
+        const unsubPoll = onSnapshot(qPoll, (snap) => {
+          const all = snap.docs.map(d => {
+            const data = d.data();
+            return { ...data, id: data.id ?? d.id };
+          });
+          setPolls(sortByIdDesc(all));
+        }, (err) => {
+          console.error("투표 불러오기 에러:", err);
+          showToast("투표를 불러올 수 없습니다. 새로고침 해주세요.");
+        });
+        return () => unsubPoll();
       }, [dbUser]);
 
       // 화면 및 탭이 바뀔 때 코인 요청을 핀포인트로 가져오기
@@ -854,6 +876,63 @@
             setConfirmModal(null); showToast("삭제되었습니다.");
           }
         });
+      };
+
+      const createPoll = async () => {
+        if (!pollTitle.trim()) return showToast("투표 제목을 입력해주세요.");
+        const cleanOptions = pollOptions.map(o => o.trim()).filter(o => o);
+        if (cleanOptions.length < 2) return showToast("선택지를 2개 이상 입력해주세요.");
+        const newPollId = Date.now() + "_" + Math.random().toString(36).substring(2, 9);
+        const newPoll = {
+          id: newPollId,
+          title: pollTitle.trim(),
+          options: cleanOptions.map((text, i) => ({ id: i, text })),
+          isMultiple: pollIsMultiple,
+          status: "open",
+          votes: {},
+          date: new Date().toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+        };
+        setPollTitle(""); setPollOptions(["", ""]); setPollIsMultiple(false);
+        showToast("투표가 등록되었습니다. 📊");
+        await setDoc(doc(db, "polls", String(newPoll.id)), newPoll);
+      };
+
+      const submitVote = async (poll) => {
+        const myInfo = students.find((s) => s.id === authStatus.user.id); if (!myInfo) return;
+        const selected = pollSelections[poll.id];
+        const chosen = poll.isMultiple ? (selected || []) : (selected !== undefined && selected !== null ? [selected] : []);
+        if (chosen.length === 0) return showToast("선택지를 골라주세요.");
+        await updateDoc(doc(db, "polls", String(poll.id)), { [`votes.${myInfo.id}`]: chosen });
+        showToast("투표가 완료되었습니다! ✅");
+      };
+
+      const togglePollStatus = (poll) => {
+        const closing = poll.status === "open";
+        setConfirmModal({
+          title: closing ? "투표 마감" : "투표 재개",
+          message: closing ? "투표를 마감하시겠습니까?\n마감하면 학생에게 결과가 공개됩니다." : "투표를 다시 열겠습니까?",
+          onConfirm: async () => {
+            await updateDoc(doc(db, "polls", String(poll.id)), { status: closing ? "closed" : "open" });
+            setConfirmModal(null); showToast(closing ? "투표가 마감되었습니다." : "투표가 재개되었습니다.");
+          }
+        });
+      };
+
+      const deletePoll = (id) => {
+        const targetIdStr = String(id);
+        setConfirmModal({ title: "투표 삭제", message: "이 투표를 완전히 삭제하시겠습니까?",
+          onConfirm: async () => { await deleteDoc(doc(db, "polls", targetIdStr)); setConfirmModal(null); showToast("삭제되었습니다."); }
+        });
+      };
+
+      const getPollTally = (poll) => {
+        const tally = {}; (poll.options || []).forEach(o => tally[o.id] = 0);
+        let voterCount = 0;
+        Object.values(poll.votes || {}).forEach(choices => {
+          voterCount++;
+          (choices || []).forEach(cId => { if (tally[cId] !== undefined) tally[cId]++; });
+        });
+        return { tally, voterCount };
       };
 
       const submitSuggestion = async () => {
@@ -1439,6 +1518,110 @@
         );
       };
 
+      const renderPollCard = (poll, isTeacher, myInfoId) => {
+        const { tally, voterCount } = getPollTally(poll);
+        const isClosed = poll.status === "closed";
+        const myVote = (poll.votes || {})[myInfoId];
+        const hasVoted = myVote !== undefined;
+        const showResults = isTeacher || isClosed;
+        const totalVotes = Object.values(tally).reduce((a, b) => a + b, 0) || 1;
+        const sel = pollSelections[poll.id];
+
+        return (
+          <div key={poll.id} className={`bg-white border rounded-xl p-4 shadow-sm ${isClosed ? "border-gray-200" : "border-cyan-300"}`}>
+            <div className="flex justify-between items-start gap-2 mb-2">
+              <div className="flex-1">
+                <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                  <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${isClosed ? "bg-gray-200 text-gray-600" : "bg-cyan-100 text-cyan-800"}`}>{isClosed ? "마감됨" : "진행중"}</span>
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">{poll.isMultiple ? "복수선택" : "단일선택"}</span>
+                </div>
+                <h4 className="font-black text-gray-800 text-sm">{poll.title}</h4>
+                <span className="text-[9px] text-gray-400">{poll.date} · {voterCount}명 참여</span>
+              </div>
+              {isTeacher && (
+                <div className="flex gap-1 shrink-0">
+                  <button type="button" onClick={() => togglePollStatus(poll)} className={`text-[10px] font-bold px-2 py-1 rounded ${isClosed ? "bg-cyan-50 text-cyan-700 hover:bg-cyan-100" : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}>{isClosed ? "재개" : "마감"}</button>
+                  <button type="button" onClick={() => deletePoll(poll.id)} className="text-red-500 bg-red-50 hover:bg-red-100 px-1.5 py-1 rounded"><Trash2 className="w-3.5 h-3.5"/></button>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1.5 mt-3">
+              {(poll.options || []).map(opt => {
+                const count = tally[opt.id] || 0;
+                const pct = showResults ? Math.round((count / totalVotes) * 100) : 0;
+                const iVotedThis = Array.isArray(myVote) && myVote.includes(opt.id);
+                const isSelected = poll.isMultiple ? (Array.isArray(sel) && sel.includes(opt.id)) : sel === opt.id;
+
+                if (showResults) {
+                  return (
+                    <div key={opt.id} className="relative">
+                      <div className={`relative overflow-hidden rounded-lg border ${iVotedThis ? "border-cyan-400" : "border-gray-200"} bg-gray-50`}>
+                        <div className="absolute inset-y-0 left-0 bg-cyan-100" style={{ width: `${pct}%` }}></div>
+                        <div className="relative flex justify-between items-center px-3 py-2">
+                          <span className="text-xs font-bold text-gray-700">{iVotedThis && "✓ "}{opt.text}</span>
+                          <span className="text-[11px] font-black text-cyan-700">{count}표 ({pct}%)</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // 학생 투표 입력 (진행중)
+                return (
+                  <label key={opt.id} className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${isSelected ? "border-cyan-400 bg-cyan-50" : "border-gray-200 hover:bg-gray-50"} ${hasVoted ? "opacity-60" : ""}`}>
+                    <input
+                      type={poll.isMultiple ? "checkbox" : "radio"}
+                      name={`poll_${poll.id}`}
+                      disabled={hasVoted}
+                      checked={isSelected || false}
+                      onChange={() => {
+                        if (poll.isMultiple) {
+                          const cur = Array.isArray(sel) ? sel : [];
+                          const next = cur.includes(opt.id) ? cur.filter(x => x !== opt.id) : [...cur, opt.id];
+                          setPollSelections({ ...pollSelections, [poll.id]: next });
+                        } else {
+                          setPollSelections({ ...pollSelections, [poll.id]: opt.id });
+                        }
+                      }}
+                      className="w-4 h-4 accent-cyan-600"
+                    />
+                    <span className="text-xs font-bold text-gray-700">{opt.text}</span>
+                  </label>
+                );
+              })}
+            </div>
+
+            {!isTeacher && !isClosed && (
+              hasVoted
+                ? <p className="text-[10px] text-cyan-700 font-bold mt-3 text-center bg-cyan-50 py-1.5 rounded-lg">✅ 투표를 완료했습니다. 결과는 마감 후 공개됩니다.</p>
+                : <button type="button" onClick={() => submitVote(poll)} className="w-full mt-3 py-2 bg-cyan-600 text-white font-bold text-xs rounded-lg hover:bg-cyan-700 transition-colors">투표하기</button>
+            )}
+            {!isTeacher && isClosed && (
+              <p className="text-[10px] text-gray-500 font-bold mt-3 text-center bg-gray-50 py-1.5 rounded-lg">{hasVoted ? "투표에 참여했습니다." : "참여하지 않은 투표입니다."} (마감됨)</p>
+            )}
+
+            {isTeacher && voterCount > 0 && (
+              <details className="mt-3 border-t border-gray-100 pt-2">
+                <summary className="text-[10px] font-bold text-indigo-600 cursor-pointer">참여자별 선택 보기 ({voterCount}명)</summary>
+                <div className="mt-2 space-y-1 max-h-40 overflow-y-auto custom-scrollbar">
+                  {Object.entries(poll.votes || {}).map(([sId, choices]) => {
+                    const st = students.find(s => String(s.id) === String(sId));
+                    const choiceTexts = (choices || []).map(cId => (poll.options.find(o => o.id === cId) || {}).text).filter(Boolean).join(", ");
+                    return (
+                      <div key={sId} className="flex justify-between items-center text-[10px] bg-gray-50 px-2 py-1 rounded">
+                        <span className="font-bold text-gray-700">{st ? st.name : `학생${sId}`}</span>
+                        <span className="text-gray-600">{choiceTexts || "-"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            )}
+          </div>
+        );
+      };
+
       const renderReadingReportCard = (report, isTeacher, myInfoId) => {
         const isExpanded = expandedReportId === report.id;
         const commentCount = (report.comments || []).length;
@@ -1654,6 +1837,7 @@
                   <button onClick={() => setStudentTab("shop")} className={`flex-1 py-2.5 ${studentTab==="shop"?"text-orange-600 border-b-2 border-orange-500 bg-white":"text-gray-500"}`}>🪙 상점</button>
                   <button onClick={() => setStudentTab("reading")} className={`flex-1 py-2.5 ${studentTab==="reading"?"text-emerald-700 border-b-2 border-emerald-600 bg-white":"text-gray-500"}`}>🐢 독서</button>
                   <button onClick={() => setStudentTab("suggestions")} className={`flex-1 py-2.5 ${studentTab==="suggestions"?"text-purple-700 border-b-2 border-purple-600 bg-white":"text-gray-500"}`}>💬 건의</button>
+                  <button onClick={() => setStudentTab("polls")} className={`flex-1 py-2.5 ${studentTab==="polls"?"text-cyan-700 border-b-2 border-cyan-600 bg-white":"text-gray-500"}`}>📊 투표</button>
                 </div>
 
                 <div className="p-3 md:p-5 overflow-y-auto bg-slate-50 flex-1">
@@ -1966,6 +2150,22 @@
                       </div>
                     </div>
                   )}
+
+                  {studentTab === "polls" && (
+                    <div className="animate-in fade-in space-y-4">
+                      <div className="bg-white p-4 rounded-xl border border-cyan-200 shadow-sm">
+                        <h4 className="text-sm font-bold text-cyan-800 flex items-center gap-1.5 mb-1"><BarChart className="w-4 h-4"/> 학급 투표</h4>
+                        <p className="text-[10px] text-gray-500">선생님이 올린 투표에 참여하세요. 결과는 투표 마감 후 공개됩니다.</p>
+                      </div>
+                      {polls.length === 0 ? (
+                        <div className="text-xs text-gray-400 text-center py-10 bg-white rounded-xl border border-dashed border-gray-200">진행 중인 투표가 없습니다.</div>
+                      ) : (
+                        <div className="space-y-3">
+                          {polls.map(poll => renderPollCard(poll, false, myInfo.id))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1984,6 +2184,7 @@
           { id: "daily_records", label: "✅ 일일점검", color: "slate" },
           { id: "suggestions", label: "💬 건의게시판", color: "purple" },
           { id: "reading_reports", label: "🐢 독서감상문", color: "emerald" },
+          { id: "polls", label: "📊 투표", color: "cyan" },
           { id: "settings", label: "⚙️ 설정", color: "slate" }
         ];
 
@@ -2626,6 +2827,38 @@
                             더보기 🔽
                         </button>
                     )}
+                  </div>
+                )}
+
+                {teacherTab === "polls" && (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-in fade-in max-w-5xl mx-auto">
+                    <div className="lg:col-span-1">
+                      <div className="bg-white p-4 rounded-xl shadow-sm border border-cyan-200 sticky top-2">
+                        <h2 className="text-sm font-black text-cyan-800 flex items-center gap-1.5 mb-3"><BarChart className="w-4 h-4"/> 새 투표 만들기</h2>
+                        <input type="text" value={pollTitle} onChange={e=>setPollTitle(e.target.value)} placeholder="투표 제목 (예: 학급 행사 정하기)" className="w-full p-2 text-xs border rounded-lg mb-3 font-bold outline-none focus:border-cyan-400" />
+                        <div className="space-y-2 mb-2">
+                          {pollOptions.map((opt, i) => (
+                            <div key={i} className="flex gap-1.5 items-center">
+                              <span className="text-[10px] font-bold text-gray-400 w-4">{i+1}.</span>
+                              <input type="text" value={opt} onChange={e=>{ const arr=[...pollOptions]; arr[i]=e.target.value; setPollOptions(arr); }} placeholder={`선택지 ${i+1}`} className="flex-1 p-1.5 text-xs border rounded-lg outline-none focus:border-cyan-400" />
+                              {pollOptions.length > 2 && (
+                                <button type="button" onClick={()=>setPollOptions(pollOptions.filter((_,idx)=>idx!==i))} className="text-red-400 hover:text-red-600 p-1"><X className="w-3.5 h-3.5"/></button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        <button type="button" onClick={()=>setPollOptions([...pollOptions, ""])} className="text-[10px] font-bold text-cyan-600 hover:text-cyan-800 mb-3">+ 선택지 추가</button>
+                        <label className="flex items-center gap-1.5 cursor-pointer mb-3"><input type="checkbox" checked={pollIsMultiple} onChange={e=>setPollIsMultiple(e.target.checked)} className="w-3.5 h-3.5 accent-cyan-600"/><span className="text-[11px] font-bold text-gray-600">복수 선택 허용</span></label>
+                        <button type="button" onClick={createPoll} className="w-full bg-cyan-600 text-white py-2 text-xs font-bold rounded-lg shadow-sm hover:bg-cyan-700 transition-colors">투표 등록하기</button>
+                      </div>
+                    </div>
+                    <div className="lg:col-span-2 space-y-3">
+                      {polls.length === 0 ? (
+                        <div className="text-xs text-gray-400 text-center py-10 bg-white rounded-xl border border-dashed border-gray-200">등록된 투표가 없습니다. 왼쪽에서 새 투표를 만들어보세요.</div>
+                      ) : (
+                        polls.map(poll => renderPollCard(poll, true, null))
+                      )}
+                    </div>
                   </div>
                 )}
 
