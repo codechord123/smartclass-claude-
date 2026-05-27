@@ -129,6 +129,7 @@
       const [readingSearch, setReadingSearch] = useState("");
       const [suggestionSearch, setSuggestionSearch] = useState("");
 
+      const [announcements, setAnnouncements] = useState([]);
       const [polls, setPolls] = useState([]);
       const [pollTitle, setPollTitle] = useState("");
       const [pollOptions, setPollOptions] = useState(["", ""]);
@@ -309,7 +310,7 @@
       };
 
       // 읽기 횟수 절약: 실시간 리스너 대신 탭 진입/새로고침/본인 쓰기 시에만 1회씩 로드
-      const loadedRef = useRef({ suggestions: false, readingReports: false, polls: false });
+      const loadedRef = useRef({ suggestions: false, readingReports: false, polls: false, seating: false, announcements: false });
 
       const loadSuggestions = async () => {
         if (!db) return;
@@ -338,6 +339,16 @@
         } catch (e) { console.error("투표 로드 에러:", e); showToast("투표를 불러올 수 없습니다."); }
       };
 
+      // 공지 배너용: 전체 건의글 대신 공지글만 읽음 (개요 화면 읽기 절감)
+      const loadAnnouncements = async () => {
+        if (!db) return;
+        try {
+          const snap = await getDocs(query(collection(db, "suggestions"), where("isAnnouncement", "==", true)));
+          setAnnouncements(sortByIdDesc(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))));
+          loadedRef.current.announcements = true;
+        } catch (e) { console.error("공지 로드 에러:", e); }
+      };
+
       // 화면 및 탭이 바뀔 때 필요한 데이터만 1회 로드 (이미 로드했으면 생략, 새로고침 버튼으로 갱신)
       useEffect(() => {
         if (!dbUser || !db) return;
@@ -346,9 +357,10 @@
           else if (teacherTab === "suggestions" && !loadedRef.current.suggestions) loadSuggestions();
           else if (teacherTab === "reading_reports" && !loadedRef.current.readingReports) loadReadingReports();
           else if (teacherTab === "polls" && !loadedRef.current.polls) loadPolls();
+          else if (teacherTab === "main_seating" && !loadedRef.current.seating) { loadSavedSeating(); loadLunchHistory(); loadedRef.current.seating = true; }
         } else if (authStatus.type === "student") {
           if (studentTab === "shop") loadStudentCoinRequests(authStatus.user.id);
-          else if (studentTab === "overview" && !loadedRef.current.suggestions) loadSuggestions();
+          else if (studentTab === "overview" && !loadedRef.current.announcements) loadAnnouncements();
           else if (studentTab === "suggestions" && !loadedRef.current.suggestions) loadSuggestions();
           else if (studentTab === "reading" && !loadedRef.current.readingReports) loadReadingReports();
           else if (studentTab === "polls" && !loadedRef.current.polls) loadPolls();
@@ -462,9 +474,7 @@
               applyMainState(data);
             }
           } catch (error) { console.error(error); }
-          
-          loadSavedSeating(); 
-          loadLunchHistory();
+
           setIsDBLoaded(true);
         };
 
@@ -1886,11 +1896,11 @@
                       )}
 
                       {/* 공지사항 */}
-                      {suggestions.filter(s => s.isAnnouncement).length > 0 && (
+                      {announcements.length > 0 && (
                         <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 mb-4 shadow-sm animate-in slide-in-from-top-2">
                           <h3 className="text-sm font-black text-rose-800 flex items-center gap-1.5 mb-2"><MessageSquare className="w-4 h-4"/> 🚨 선생님 공지사항</h3>
                           <div className="space-y-2">
-                            {suggestions.filter(s => s.isAnnouncement).sort((a, b) => b.id - a.id).map(ann => (
+                            {announcements.map(ann => (
                               <div key={ann.id} className="bg-white p-3 rounded-lg shadow-sm border border-rose-100">
                                  <div className="flex justify-between items-center mb-1.5"><span className="text-xs font-bold text-rose-900">{ann.title}</span><span className="text-[9px] text-gray-400">{ann.date}</span></div>
                                  <p className="text-[11px] text-gray-700 whitespace-pre-wrap leading-relaxed">{linkify(ann.text)}</p>
