@@ -1036,15 +1036,21 @@
 
       const adjustTeacherScore = async (studentId, delta, overrideDate = null, category = "teacher_racing") => {
         const date = overrideDate || selectedDate || getLocalDateString(new Date());
-        const checkerId = category; 
-        const currentVal = (records||{})[date]?.[checkerId]?.[studentId] || 0; 
-        const newVal = currentVal + delta;
-        
-        setRecords((prev) => { const safePrev = prev||{}; const dayData = safePrev[date] || {}; const checkerData = dayData[checkerId] || {}; return { ...safePrev, [date]: { ...dayData, [checkerId]: { ...checkerData, [studentId]: newVal } } }; });
-        
+        const checkerId = category;
+
+        // 서버의 increment(delta)와 동일하게 prev 기반으로 누적시켜야
+        // 빠르게 연속 클릭해도 로컬과 서버 값이 어긋나지 않음
+        setRecords((prev) => {
+          const safePrev = prev || {};
+          const dayData = safePrev[date] || {};
+          const checkerData = dayData[checkerId] || {};
+          const curVal = Number(checkerData[studentId]) || 0;
+          return { ...safePrev, [date]: { ...dayData, [checkerId]: { ...checkerData, [studentId]: curVal + delta } } };
+        });
+
         if (dbUser && db) {
-          try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${date}.${checkerId}.${studentId}`]: increment(delta) }); invalidateCache(); if (delta > 0) showToast(`+1점 처리되었습니다.`); if (delta < 0) showToast(`-1점 처리되었습니다.`); } 
-          catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [checkerId]: { [studentId]: newVal } } } }, { merge: true }); invalidateCache(); }
+          try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${date}.${checkerId}.${studentId}`]: increment(delta) }); invalidateCache(); if (delta > 0) showToast(`+1점 처리되었습니다.`); if (delta < 0) showToast(`-1점 처리되었습니다.`); }
+          catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [checkerId]: { [studentId]: delta } } } }, { merge: true }); invalidateCache(); }
         }
       };
 
