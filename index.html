@@ -2952,40 +2952,99 @@
                         const sid = parseInt(fixScoreStudent);
                         const cur = sid && fixScoreDate && fixScoreCategory ? (records||{})[fixScoreDate]?.[fixScoreCategory]?.[sid] : undefined;
                         const curDisplay = cur === undefined ? "(기록 없음)" : (typeof cur === "number" ? `${cur}점` : String(cur));
+
+                        // 선택된 학생의 모든 선생님 카테고리 기록 수집
+                        const teacherCats = ["teacher_racing", "teacher_speaking", "teacher_listening", "teacher_communication"];
+                        const studentRows = [];
+                        if (sid) {
+                          Object.entries(records || {}).forEach(([date, dR]) => {
+                            if (!dR || typeof dR !== "object") return;
+                            teacherCats.forEach(cat => {
+                              const v = dR[cat]?.[sid];
+                              if (v !== undefined && v !== null && v !== false && v !== "") {
+                                studentRows.push({ date, category: cat, value: v });
+                              }
+                            });
+                          });
+                          studentRows.sort((a,b) => Math.abs(Number(b.value)||0) - Math.abs(Number(a.value)||0));
+                        }
+
                         return (
-                          <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
-                            <div className="flex flex-col">
-                              <label className="text-[9px] font-bold text-gray-500 mb-0.5">학생</label>
-                              <select value={fixScoreStudent} onChange={e=>setFixScoreStudent(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400">
-                                <option value="">선택...</option>
-                                {students.map(s => <option key={s.id} value={s.id}>{s.id}번 {s.name}</option>)}
-                              </select>
-                            </div>
-                            <div className="flex flex-col">
-                              <label className="text-[9px] font-bold text-gray-500 mb-0.5">날짜</label>
-                              <input type="date" value={fixScoreDate} onChange={e=>setFixScoreDate(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400" />
-                            </div>
-                            <div className="flex flex-col">
-                              <label className="text-[9px] font-bold text-gray-500 mb-0.5">카테고리</label>
-                              <select value={fixScoreCategory} onChange={e=>setFixScoreCategory(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400">
-                                <option value="teacher_racing">teacher_racing (말차례)</option>
-                                <option value="teacher_communication">teacher_communication (의사소통)</option>
-                                <option value="teacher_speaking">teacher_speaking (말하기)</option>
-                                <option value="teacher_listening">teacher_listening (듣기)</option>
-                              </select>
-                            </div>
-                            <div className="flex flex-col">
-                              <label className="text-[9px] font-bold text-gray-500 mb-0.5">현재값 → 새 값</label>
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] font-bold text-gray-600 bg-gray-100 px-2 py-2 rounded-lg whitespace-nowrap">{curDisplay}</span>
-                                <input type="number" value={fixScoreNewValue} onChange={e=>setFixScoreNewValue(e.target.value)} placeholder="새 값" className="w-20 p-2 text-xs border rounded-lg outline-none focus:border-amber-400" />
+                          <>
+                            <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
+                              <div className="flex flex-col">
+                                <label className="text-[9px] font-bold text-gray-500 mb-0.5">학생</label>
+                                <select value={fixScoreStudent} onChange={e=>setFixScoreStudent(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400">
+                                  <option value="">선택...</option>
+                                  {students.map(s => <option key={s.id} value={s.id}>{s.id}번 {s.name}</option>)}
+                                </select>
                               </div>
+                              <div className="flex flex-col">
+                                <label className="text-[9px] font-bold text-gray-500 mb-0.5">날짜</label>
+                                <input type="date" value={fixScoreDate} onChange={e=>setFixScoreDate(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400" />
+                              </div>
+                              <div className="flex flex-col">
+                                <label className="text-[9px] font-bold text-gray-500 mb-0.5">카테고리</label>
+                                <select value={fixScoreCategory} onChange={e=>setFixScoreCategory(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400">
+                                  <option value="teacher_racing">teacher_racing (말차례)</option>
+                                  <option value="teacher_communication">teacher_communication (의사소통)</option>
+                                  <option value="teacher_speaking">teacher_speaking (말하기)</option>
+                                  <option value="teacher_listening">teacher_listening (듣기)</option>
+                                </select>
+                              </div>
+                              <div className="flex flex-col">
+                                <label className="text-[9px] font-bold text-gray-500 mb-0.5">현재값 → 새 값</label>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-bold text-gray-600 bg-gray-100 px-2 py-2 rounded-lg whitespace-nowrap">{curDisplay}</span>
+                                  <input type="number" value={fixScoreNewValue} onChange={e=>setFixScoreNewValue(e.target.value)} placeholder="새 값" className="w-20 p-2 text-xs border rounded-lg outline-none focus:border-amber-400" />
+                                </div>
+                              </div>
+                              <button type="button" onClick={async () => { await fixTeacherScoreAbsolute(fixScoreStudent, fixScoreDate, fixScoreCategory, fixScoreNewValue); setFixScoreNewValue(""); }} className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold py-2 px-3 rounded-lg shadow-sm transition-colors">덮어쓰기 저장</button>
                             </div>
-                            <button type="button" onClick={async () => { await fixTeacherScoreAbsolute(fixScoreStudent, fixScoreDate, fixScoreCategory, fixScoreNewValue); setFixScoreNewValue(""); }} className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold py-2 px-3 rounded-lg shadow-sm transition-colors">덮어쓰기 저장</button>
-                          </div>
+                            <p className="text-[9px] text-amber-700 mt-2">💡 학생·날짜·카테고리를 고르면 현재 저장된 점수가 표시됩니다. 새 값(숫자, 0 또는 음수 포함)을 입력하고 저장하세요.</p>
+
+                            {sid > 0 && (
+                              <div className="mt-3 border-t border-amber-100 pt-3">
+                                <h3 className="text-[11px] font-black text-amber-800 mb-2">📋 {students.find(s=>s.id===sid)?.name} 학생의 선생님 점수 기록 ({studentRows.length}건, 값 큰 순)</h3>
+                                {studentRows.length === 0 ? (
+                                  <p className="text-[10px] text-gray-400">선생님 권한 부여 기록이 없습니다.</p>
+                                ) : (
+                                  <div className="max-h-60 overflow-y-auto custom-scrollbar border border-gray-100 rounded-lg">
+                                    <table className="w-full text-[10px]">
+                                      <thead className="bg-amber-50 sticky top-0">
+                                        <tr>
+                                          <th className="p-1.5 text-left font-bold text-amber-800">날짜</th>
+                                          <th className="p-1.5 text-left font-bold text-amber-800">카테고리</th>
+                                          <th className="p-1.5 text-center font-bold text-amber-800">현재 점수</th>
+                                          <th className="p-1.5 text-center font-bold text-amber-800">동작</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {studentRows.map((row, i) => {
+                                          const num = Number(row.value) || 0;
+                                          const isBig = Math.abs(num) >= 10;
+                                          return (
+                                            <tr key={i} className={`border-t border-gray-100 ${isBig ? 'bg-red-50' : ''}`}>
+                                              <td className="p-1.5 font-medium text-gray-700">{row.date}</td>
+                                              <td className="p-1.5 text-gray-600">{row.category}</td>
+                                              <td className={`p-1.5 text-center font-black ${isBig ? 'text-red-600' : 'text-gray-800'}`}>{String(row.value)}{isBig && ' ⚠️'}</td>
+                                              <td className="p-1.5 text-center">
+                                                <button type="button" onClick={() => { setFixScoreDate(row.date); setFixScoreCategory(row.category); setFixScoreNewValue(""); }} className="text-[9px] font-bold text-amber-700 bg-amber-100 hover:bg-amber-200 px-2 py-0.5 rounded mr-1">선택</button>
+                                                <button type="button" onClick={() => fixTeacherScoreAbsolute(sid, row.date, row.category, 0)} className="text-[9px] font-bold text-red-700 bg-red-100 hover:bg-red-200 px-2 py-0.5 rounded">0으로</button>
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                                <p className="text-[9px] text-gray-500 mt-2">⚠️ 표시는 |값| ≥ 10인 비정상 의심 행입니다. "선택"으로 그 날짜·카테고리를 위 폼에 채워 새 값을 입력하거나, "0으로"를 눌러 바로 0으로 초기화합니다.</p>
+                              </div>
+                            )}
+                          </>
                         );
                       })()}
-                      <p className="text-[9px] text-amber-700 mt-2">💡 학생·날짜·카테고리를 고르면 현재 저장된 점수가 표시됩니다. 새 값(숫자, 0 또는 음수 포함)을 입력하고 저장하세요.</p>
                     </div>
 
                     {/* ✨ 개요 화면 커스텀 설정 */}
