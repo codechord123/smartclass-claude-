@@ -206,6 +206,10 @@
       const [studentTab, setStudentTab] = useState("overview"); 
       const [studentReadingSubTab, setStudentReadingSubTab] = useState("write");
       const [scoreBoardDate, setScoreBoardDate] = useState(getLocalDateString(new Date()));
+      const [fixScoreStudent, setFixScoreStudent] = useState("");
+      const [fixScoreDate, setFixScoreDate] = useState(getLocalDateString(new Date(Date.now() - 86400000)));
+      const [fixScoreCategory, setFixScoreCategory] = useState("teacher_racing");
+      const [fixScoreNewValue, setFixScoreNewValue] = useState("");
       const [gridConfig, setGridConfig] = useState(new Array(35).fill(1));
       const [isLayoutEditMode, setIsLayoutEditMode] = useState(false);
 
@@ -1052,6 +1056,31 @@
           try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${date}.${checkerId}.${studentId}`]: increment(delta) }); invalidateCache(); if (delta > 0) showToast(`+1점 처리되었습니다.`); if (delta < 0) showToast(`-1점 처리되었습니다.`); }
           catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [checkerId]: { [studentId]: delta } } } }, { merge: true }); invalidateCache(); }
         }
+      };
+
+      // 점수 수동 보정: 특정 날짜/카테고리/학생의 점수를 절대값으로 덮어쓰기
+      const fixTeacherScoreAbsolute = async (studentId, date, category, absoluteValue) => {
+        if (!dbUser || !db) return showToast("로그인 정보가 없어 저장할 수 없습니다.");
+        const sid = parseInt(studentId);
+        const val = Number(absoluteValue);
+        if (!sid) return showToast("학생을 선택해주세요.");
+        if (!date) return showToast("날짜를 선택해주세요.");
+        if (!category) return showToast("카테고리를 선택해주세요.");
+        if (!Number.isFinite(val)) return showToast("새 값(숫자)을 입력해주세요.");
+
+        setRecords((prev) => {
+          const safePrev = prev || {};
+          const dayData = safePrev[date] || {};
+          const checkerData = dayData[category] || {};
+          return { ...safePrev, [date]: { ...dayData, [category]: { ...checkerData, [sid]: val } } };
+        });
+        try {
+          await updateDoc(doc(db, "classData", "mainState"), { [`records.${date}.${category}.${sid}`]: val });
+        } catch (e) {
+          await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [category]: { [sid]: val } } } }, { merge: true });
+        }
+        invalidateCache();
+        showToast(`✅ ${date} ${category} 학생${sid}번 점수를 ${val}점으로 수정했습니다.`);
       };
 
       const setPeerRecord = async (checkerId, checkerRole, targetId, point) => {
@@ -2914,7 +2943,51 @@
 
                 {teacherTab === "settings" && (
                   <div className="space-y-4 animate-in fade-in max-w-5xl mx-auto">
-                    
+
+                    {/* 🛠 점수 수동 보정 */}
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-amber-200">
+                      <h2 className="text-sm font-black text-amber-800 mb-1 flex items-center gap-1.5">🛠 점수 수동 보정</h2>
+                      <p className="text-[10px] text-gray-500 mb-3">잘못 입력된 점수를 특정 날짜·카테고리에서 직접 새 값으로 덮어쓸 수 있습니다. (예: 폭증한 점수 정정)</p>
+                      {(() => {
+                        const sid = parseInt(fixScoreStudent);
+                        const cur = sid && fixScoreDate && fixScoreCategory ? (records||{})[fixScoreDate]?.[fixScoreCategory]?.[sid] : undefined;
+                        const curDisplay = cur === undefined ? "(기록 없음)" : (typeof cur === "number" ? `${cur}점` : String(cur));
+                        return (
+                          <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
+                            <div className="flex flex-col">
+                              <label className="text-[9px] font-bold text-gray-500 mb-0.5">학생</label>
+                              <select value={fixScoreStudent} onChange={e=>setFixScoreStudent(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400">
+                                <option value="">선택...</option>
+                                {students.map(s => <option key={s.id} value={s.id}>{s.id}번 {s.name}</option>)}
+                              </select>
+                            </div>
+                            <div className="flex flex-col">
+                              <label className="text-[9px] font-bold text-gray-500 mb-0.5">날짜</label>
+                              <input type="date" value={fixScoreDate} onChange={e=>setFixScoreDate(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400" />
+                            </div>
+                            <div className="flex flex-col">
+                              <label className="text-[9px] font-bold text-gray-500 mb-0.5">카테고리</label>
+                              <select value={fixScoreCategory} onChange={e=>setFixScoreCategory(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400">
+                                <option value="teacher_racing">teacher_racing (말차례)</option>
+                                <option value="teacher_communication">teacher_communication (의사소통)</option>
+                                <option value="teacher_speaking">teacher_speaking (말하기)</option>
+                                <option value="teacher_listening">teacher_listening (듣기)</option>
+                              </select>
+                            </div>
+                            <div className="flex flex-col">
+                              <label className="text-[9px] font-bold text-gray-500 mb-0.5">현재값 → 새 값</label>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold text-gray-600 bg-gray-100 px-2 py-2 rounded-lg whitespace-nowrap">{curDisplay}</span>
+                                <input type="number" value={fixScoreNewValue} onChange={e=>setFixScoreNewValue(e.target.value)} placeholder="새 값" className="w-20 p-2 text-xs border rounded-lg outline-none focus:border-amber-400" />
+                              </div>
+                            </div>
+                            <button type="button" onClick={async () => { await fixTeacherScoreAbsolute(fixScoreStudent, fixScoreDate, fixScoreCategory, fixScoreNewValue); setFixScoreNewValue(""); }} className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold py-2 px-3 rounded-lg shadow-sm transition-colors">덮어쓰기 저장</button>
+                          </div>
+                        );
+                      })()}
+                      <p className="text-[9px] text-amber-700 mt-2">💡 학생·날짜·카테고리를 고르면 현재 저장된 점수가 표시됩니다. 새 값(숫자, 0 또는 음수 포함)을 입력하고 저장하세요.</p>
+                    </div>
+
                     {/* ✨ 개요 화면 커스텀 설정 */}
                     <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
                       <h2 className="text-sm font-black text-gray-800 mb-1 flex items-center gap-1.5"><LayoutGrid className="w-4 h-4 text-indigo-500"/> 개요 화면 (대시보드) 위젯 설정</h2>
