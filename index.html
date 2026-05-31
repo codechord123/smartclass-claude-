@@ -478,6 +478,30 @@
               }
               
               applyMainState(data);
+
+              // 함정 강화: 세션당 1회 records 학생별 합계 스냅샷 기록.
+              // 외부(F12/스크립트) 쓰기로 점수가 바뀌면 다음 스냅샷과 비교해 추적 가능.
+              try {
+                if (!sessionStorage.getItem('snapTaken')) {
+                  sessionStorage.setItem('snapTaken', '1');
+                const totals = {};
+                Object.values(data.records || {}).forEach(dR => {
+                  if (!dR || typeof dR !== "object") return;
+                  Object.values(dR).forEach(t => {
+                    if (!t || typeof t !== "object") return;
+                    Object.entries(t).forEach(([sid, val]) => {
+                      let p = 0;
+                      if (typeof val === "number") p = val;
+                      else if (typeof val === "string" && val.startsWith("[v] ")) p = parseInt(val.substring(4).split("_")[0], 10) || 0;
+                      else if (typeof val === "string" && val.startsWith("[거북이] ")) p = parseInt(val.replace("[거북이] ", ""), 10) || 0;
+                      else if (typeof val === "string" && val.startsWith("[-] ")) p = -1;
+                      if (p !== 0) totals[sid] = (totals[sid] || 0) + p;
+                    });
+                  });
+                });
+                logAudit("snapshot", { totals, booksRead: data.booksRead || {} });
+                }
+              } catch (e) {}
             }
           } catch (error) { console.error(error); }
 
