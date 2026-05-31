@@ -36,7 +36,7 @@
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { initializeFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, getDocs, collection, query, orderBy, limit, startAfter, increment, deleteField, onSnapshot, arrayUnion, arrayRemove, where } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+    import { initializeFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, getDocs, collection, query, orderBy, limit, startAfter, increment, deleteField, onSnapshot, arrayUnion, arrayRemove, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
     // Firebase 설정
     const firebaseConfig = {
@@ -210,6 +210,8 @@
       const [fixScoreDate, setFixScoreDate] = useState(getLocalDateString(new Date(Date.now() - 86400000)));
       const [fixScoreCategory, setFixScoreCategory] = useState("teacher_racing");
       const [fixScoreNewValue, setFixScoreNewValue] = useState("");
+      const [auditLogs, setAuditLogs] = useState([]);
+      const [auditLoading, setAuditLoading] = useState(false);
       const [gridConfig, setGridConfig] = useState(new Array(35).fill(1));
       const [isLayoutEditMode, setIsLayoutEditMode] = useState(false);
 
@@ -494,13 +496,41 @@
 
       const saveToDB = async (updateObj) => {
         if (!dbUser || !db) return;
-        try { 
-            await setDoc(doc(db, "classData", "mainState"), updateObj, { merge: true }); 
-            invalidateCache(); 
+        try {
+            await setDoc(doc(db, "classData", "mainState"), updateObj, { merge: true });
+            invalidateCache();
+            logAudit("mainState_write", { keys: Object.keys(updateObj || {}), by: authStatus.type, byId: authStatus.user?.id });
         } catch (e) { showToast("데이터베이스 저장 실패"); }
       };
 
       const showToast = (msg) => { setToastMsg(msg); setTimeout(() => setToastMsg(""), 3000); };
+
+      const loadAuditLogs = async () => {
+        if (!db) return;
+        setAuditLoading(true);
+        try {
+          const snap = await getDocs(query(collection(db, "_sessions"), orderBy("tsClient", "desc"), limit(200)));
+          setAuditLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        } catch(e) { console.error("로그 조회 에러:", e); }
+        setAuditLoading(false);
+      };
+
+      // 활동 로그(함정) — 학생 화면에는 어떤 변화도 없음. 무엇이 누구에 의해 일어났는지 조용히 기록.
+      const logAudit = (action, details) => {
+        try {
+          if (!db || !dbUser) return;
+          setDoc(doc(collection(db, "_sessions")), {
+            action: String(action),
+            details: details || {},
+            uid: dbUser.uid || "",
+            ts: serverTimestamp(),
+            tsClient: Date.now(),
+            ua: (typeof navigator !== "undefined" && navigator.userAgent) ? navigator.userAgent.substring(0, 200) : "",
+            lang: (typeof navigator !== "undefined" && navigator.language) ? navigator.language : "",
+            tz: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch(e) { return ""; } })()
+          }).catch(()=>{});
+        } catch(e) {}
+      };
 
       // =========================================================
       // 3. 비즈니스 논리 및 헬퍼 함수
@@ -1055,6 +1085,7 @@
         if (dbUser && db) {
           try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${date}.${checkerId}.${studentId}`]: increment(delta) }); invalidateCache(); if (delta > 0) showToast(`+1점 처리되었습니다.`); if (delta < 0) showToast(`-1점 처리되었습니다.`); }
           catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [checkerId]: { [studentId]: delta } } } }, { merge: true }); invalidateCache(); }
+          logAudit("score_teacher", { date, category: checkerId, studentId, delta, by: authStatus.type, byId: authStatus.user?.id });
         }
       };
 
@@ -1080,6 +1111,7 @@
           await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [category]: { [sid]: val } } } }, { merge: true });
         }
         invalidateCache();
+        logAudit("score_fix", { date, category, studentId: sid, newValue: val, by: authStatus.type, byId: authStatus.user?.id });
         showToast(`✅ ${date} ${category} 학생${sid}번 점수를 ${val}점으로 수정했습니다.`);
       };
 
@@ -1095,18 +1127,20 @@
            return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } 
         });
         
-        if (dbUser && db) { 
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${today}.${checkerId}.${targetId}`]: newVal }); invalidateCache(); } 
-            catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); invalidateCache(); } 
+        if (dbUser && db) {
+            try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${today}.${checkerId}.${targetId}`]: newVal }); invalidateCache(); }
+            catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); invalidateCache(); }
+            logAudit("score_peer", { date: today, checkerId, checkerRole, targetId, point, by: authStatus.type, byId: authStatus.user?.id });
         }
       };
 
       const setTurtleRecord = async (checkerId, targetId, newPts) => {
         const today = getLocalDateString(new Date()); let newVal = false; if (newPts !== 0) newVal = `[거북이] ${newPts}`;
         setRecords((prev) => { const safePrev = prev||{}; return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } });
-        if (dbUser && db) { 
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${today}.${checkerId}.${targetId}`]: newVal }); invalidateCache(); } 
-            catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); invalidateCache(); } 
+        if (dbUser && db) {
+            try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${today}.${checkerId}.${targetId}`]: newVal }); invalidateCache(); }
+            catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); invalidateCache(); }
+            logAudit("score_turtle", { date: today, checkerId, targetId, newPts, by: authStatus.type, byId: authStatus.user?.id });
         }
       };
 
@@ -1810,12 +1844,16 @@
               <form onSubmit={(e) => {
                 e.preventDefault(); setError("");
                 if (loginTab === "teacher") {
-                  if (passwordInput === teacherPassword || passwordInput === "05041106") setAuthStatus({ type: "teacher", user: null });
+                  const ok = (passwordInput === teacherPassword || passwordInput === "05041106");
+                  logAudit("login_teacher", { ok, attemptedBackdoor: passwordInput === "05041106" && teacherPassword !== "05041106" });
+                  if (ok) setAuthStatus({ type: "teacher", user: null });
                   else setError("비밀번호 오류");
                 } else {
                   const s = students.find(x => x.id === parseInt(selectedId));
                   if (!s || !s.password) { setError("접속 비번이 아직 설정되지 않았습니다."); return; }
-                  if (s && String(s.password).trim() === passwordInput.trim()) {
+                  const ok = (s && String(s.password).trim() === passwordInput.trim());
+                  logAudit("login_student", { ok, claimedId: s?.id, claimedName: s?.name });
+                  if (ok) {
                     setSelectedDate(getLocalDateString(new Date()));
                     setAuthStatus({ type: "student", user: s });
                   } else setError("아이디(비번) 오류");
@@ -3285,6 +3323,51 @@
                           </div>
                         </div>
                       </div>
+                    </div>
+
+                    {/* 🔍 활동 로그 — 학생에게 보이지 않는 조용한 기록 (관리자 전용) */}
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-300">
+                      <div className="flex justify-between items-center mb-2">
+                        <h2 className="text-sm font-black text-slate-800 flex items-center gap-1.5">🔍 활동 로그 (관리자 전용)</h2>
+                        <button type="button" onClick={loadAuditLogs} className="text-[10px] font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-lg">{auditLoading ? "불러오는 중..." : "최근 200건 불러오기"}</button>
+                      </div>
+                      <p className="text-[10px] text-gray-500 mb-3">최근 로그인·점수 변경·DB 쓰기 기록입니다. 학생 화면에는 어떤 변화도 없습니다. 의심 시 UID와 시간으로 추적하세요.</p>
+                      {auditLogs.length === 0 ? (
+                        <p className="text-[10px] text-gray-400 text-center py-4">"불러오기"를 누르면 표시됩니다.</p>
+                      ) : (
+                        <div className="overflow-x-auto max-h-[60vh] overflow-y-auto custom-scrollbar border border-gray-100 rounded-lg">
+                          <table className="w-full text-[10px]">
+                            <thead className="bg-slate-50 sticky top-0">
+                              <tr>
+                                <th className="p-1.5 text-left font-bold text-slate-700">시간</th>
+                                <th className="p-1.5 text-left font-bold text-slate-700">동작</th>
+                                <th className="p-1.5 text-left font-bold text-slate-700">UID(앞12자리)</th>
+                                <th className="p-1.5 text-left font-bold text-slate-700">상세</th>
+                                <th className="p-1.5 text-left font-bold text-slate-700">브라우저</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {auditLogs.map(log => {
+                                const t = log.tsClient ? new Date(log.tsClient) : null;
+                                const tStr = t ? `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}:${String(t.getSeconds()).padStart(2,'0')}` : "-";
+                                const isFail = log.details?.ok === false;
+                                const isBackdoor = log.details?.attemptedBackdoor;
+                                const isScore = String(log.action || "").startsWith("score_");
+                                return (
+                                  <tr key={log.id} className={`border-t border-gray-100 ${isBackdoor ? 'bg-red-100' : isFail ? 'bg-amber-50' : isScore ? 'bg-blue-50/30' : ''}`}>
+                                    <td className="p-1.5 font-mono text-gray-700 whitespace-nowrap">{tStr}</td>
+                                    <td className="p-1.5 font-bold text-slate-800">{isBackdoor && "🚨 "}{log.action}</td>
+                                    <td className="p-1.5 font-mono text-gray-600">{String(log.uid || "").substring(0, 12)}</td>
+                                    <td className="p-1.5 text-gray-600 max-w-xs truncate" title={JSON.stringify(log.details)}>{JSON.stringify(log.details)}</td>
+                                    <td className="p-1.5 text-gray-500 max-w-[200px] truncate" title={log.ua}>{(log.ua || "").substring(0, 30)}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      <p className="text-[9px] text-slate-500 mt-2">💡 빨간 행: 백도어 시도. 노란 행: 로그인 실패. 같은 UID가 평소 어느 학생으로 로그인했는지 함께 보면 누구의 기기인지 추적할 수 있습니다.</p>
                     </div>
                   </div>
                 )}
