@@ -35,7 +35,7 @@
     } from "https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0";
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+    import { getAuth, signInAnonymously, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
     import { initializeFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, getDocs, collection, query, orderBy, limit, startAfter, increment, deleteField, onSnapshot, arrayUnion, arrayRemove, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
     // Firebase 설정
@@ -91,7 +91,8 @@
       const [rolePool, setRolePool] = useState(defaultRoles);
       const [localRolePool, setLocalRolePool] = useState(defaultRoles.join("\n"));
       const realNames = Object.keys(genderMap);
-      const [teacherPassword, setTeacherPassword] = useState("05041106");
+      // (구) teacherPassword는 Firebase Auth로 대체됨. 호환을 위한 더미.
+      const teacherPassword = "";
       const [students, setStudents] = useState(() => Array.from({ length: 25 }, (_, i) => ({ id: i + 1, name: realNames[i] || `학생${i+1}`, role: defaultRoles[i] || "역할 없음", password: "", isLocked: false, gender: genderMap[realNames[i]] || "M" })));
 
       const [records, setRecords] = useState({});
@@ -200,7 +201,10 @@
       const [loginTab, setLoginTab] = useState("student");
       const [selectedId, setSelectedId] = useState(1);
       const [passwordInput, setPasswordInput] = useState("");
+      const [emailInput, setEmailInput] = useState("");
       const [error, setError] = useState("");
+      // 학생/거북이/책 카운트는 별도 문서(보안 규칙에서 학생 쓰기 허용)
+      const [sharedPeer, setSharedPeer] = useState({}); // {date: {checkerId: {targetId: val}}}
 
       const [teacherTab, setTeacherTab] = useState("overview"); 
       const [studentTab, setStudentTab] = useState("overview"); 
@@ -301,7 +305,16 @@
 
       useEffect(() => {
         if (!auth) { setIsDBLoaded(true); return; }
-        signInAnonymously(auth).catch(() => setIsDBLoaded(true));
+        // 페이지 로드 시 항상 익명으로 시작. 직전 세션이 선생님(이메일)로 남아있으면 로그아웃 후 익명.
+        const init = async () => {
+          try {
+            if (auth.currentUser && auth.currentUser.email) {
+              await signOut(auth);
+            }
+            await signInAnonymously(auth);
+          } catch (e) { setIsDBLoaded(true); }
+        };
+        init();
         const unsubscribe = onAuthStateChanged(auth, (user) => { setDbUser(user); if (!user) setIsDBLoaded(true); });
         return () => unsubscribe();
       }, []);
@@ -401,7 +414,7 @@
       }, [dbUser, expandedReportId]);
 
       const applyMainState = (data) => {
-        if (data.teacherPassword !== undefined) setTeacherPassword(String(data.teacherPassword));
+        // teacherPassword는 더 이상 사용하지 않음 (Firebase Auth로 이전)
         if (data.students && Array.isArray(data.students) && data.students.length > 0) {
           const mergedStudents = data.students.map((s) => ({ ...s, isLocked: s.isLocked || false, gender: genderMap[s.name] || s.gender || "M" }));
           setStudents(mergedStudents); 
@@ -478,6 +491,38 @@
               }
               
               applyMainState(data);
+
+              // 학생 또래평가/거북이/책카운트 별도 문서 로드 + 로컬 records/booksRead에 병합
+              try {
+                const sharedRef = doc(db, "classData", "sharedRecords");
+                const sharedSnap = await getDoc(sharedRef);
+                if (sharedSnap.exists()) {
+                  const sd = sharedSnap.data();
+                  const peer = sd.peer || {};
+                  setSharedPeer(peer);
+                  // 로컬 records에 peer 데이터 병합 (같은 (date,checker,target)이면 sharedPeer 우선)
+                  setRecords(prev => {
+                    const merged = { ...(prev || {}) };
+                    Object.entries(peer).forEach(([date, dR]) => {
+                      merged[date] = { ...(merged[date] || {}) };
+                      Object.entries(dR || {}).forEach(([cId, tgts]) => {
+                        merged[date][cId] = { ...(merged[date][cId] || {}), ...(tgts || {}) };
+                      });
+                    });
+                    return merged;
+                  });
+                  // booksRead: mainState값에 sharedRecords 증감 합산
+                  if (sd.booksRead) {
+                    setBooksRead(prev => {
+                      const merged = { ...(prev || {}) };
+                      Object.entries(sd.booksRead).forEach(([sid, delta]) => {
+                        merged[sid] = Math.max(0, (merged[sid] || 0) + (Number(delta) || 0));
+                      });
+                      return merged;
+                    });
+                  }
+                }
+              } catch (e) { console.error("sharedRecords 로드 에러:", e); }
 
               // 함정 강화: 세션당 1회 records 학생별 합계 스냅샷 기록.
               // 외부(F12/스크립트) 쓰기로 점수가 바뀌면 다음 스냅샷과 비교해 추적 가능.
@@ -900,8 +945,9 @@
 
         if (!saveAsDraft && (!existingReport || existingReport.isDraft)) {
             setBooksRead(prev => ({ ...prev, [s.id]: (prev[s.id] || 0) + 1 }));
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`booksRead.${s.id}`]: increment(1) }); invalidateCache(); } 
-            catch(e) { await setDoc(doc(db, "classData", "mainState"), { booksRead: { [s.id]: 1 } }, { merge: true }); invalidateCache(); }
+            // 학생 쓰기 가능 위치: sharedRecords.booksRead
+            try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`booksRead.${s.id}`]: increment(1) }); }
+            catch(e) { await setDoc(doc(db, "classData", "sharedRecords"), { booksRead: { [s.id]: 1 } }, { merge: true }); }
         }
 
         setReadingReports(prev => sortByIdDesc([nR, ...prev.filter(r => String(r.id) !== String(nR.id))]));
@@ -932,8 +978,8 @@
             await deleteDoc(doc(db, "readingReports", targetIdStr));
             if (!isDraft) {
                 setBooksRead(prev => ({ ...prev, [authorId]: Math.max(0, (prev[authorId] || 0) - 1) }));
-                await updateDoc(doc(db, "classData", "mainState"), { [`booksRead.${authorId}`]: increment(-1) }).catch(()=>{});
-                invalidateCache();
+                // 학생 쓰기 가능 위치: sharedRecords.booksRead
+                await updateDoc(doc(db, "classData", "sharedRecords"), { [`booksRead.${authorId}`]: increment(-1) }).catch(()=>{});
             }
             setConfirmModal(null); showToast(!isDraft ? "삭제 및 1권 차감이 완료되었습니다." : "삭제되었습니다.");
           },
@@ -1140,20 +1186,25 @@
       };
 
       const setPeerRecord = async (checkerId, checkerRole, targetId, point) => {
-        const today = getLocalDateString(new Date()); 
+        const today = getLocalDateString(new Date());
         let newVal = false;
         if (point !== 0) {
            newVal = `[v] ${point}_${checkerRole}`;
         }
-        
-        setRecords((prev) => { 
-           const safePrev = prev||{}; 
-           return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } 
+
+        setRecords((prev) => {
+           const safePrev = prev||{};
+           return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } }
         });
-        
+        setSharedPeer((prev) => {
+           const safePrev = prev||{};
+           return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } }
+        });
+
         if (dbUser && db) {
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${today}.${checkerId}.${targetId}`]: newVal }); invalidateCache(); }
-            catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); invalidateCache(); }
+            // 보안 규칙에 따라 학생도 쓸 수 있는 sharedRecords에 저장
+            try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`peer.${today}.${checkerId}.${targetId}`]: newVal }); }
+            catch (e) { await setDoc(doc(db, "classData", "sharedRecords"), { peer: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); }
             logAudit("score_peer", { date: today, checkerId, checkerRole, targetId, point, by: authStatus.type, byId: authStatus.user?.id });
         }
       };
@@ -1161,9 +1212,10 @@
       const setTurtleRecord = async (checkerId, targetId, newPts) => {
         const today = getLocalDateString(new Date()); let newVal = false; if (newPts !== 0) newVal = `[거북이] ${newPts}`;
         setRecords((prev) => { const safePrev = prev||{}; return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } });
+        setSharedPeer((prev) => { const safePrev = prev||{}; return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } });
         if (dbUser && db) {
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${today}.${checkerId}.${targetId}`]: newVal }); invalidateCache(); }
-            catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); invalidateCache(); }
+            try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`peer.${today}.${checkerId}.${targetId}`]: newVal }); }
+            catch (e) { await setDoc(doc(db, "classData", "sharedRecords"), { peer: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); }
             logAudit("score_turtle", { date: today, checkerId, targetId, newPts, by: authStatus.type, byId: authStatus.user?.id });
         }
       };
@@ -1288,16 +1340,21 @@
         try { document.execCommand("copy"); showToast("✅ 복사 완료!"); } catch (err) { showToast("복사 실패"); } document.body.removeChild(textArea);
       };
 
-      const changeTeacherPassword = (newPw) => { if (newPw.trim() === "") return; setTeacherPassword(newPw); saveToDB({ teacherPassword: newPw }); showToast("비밀번호 변경 완료."); };
+      const changeTeacherPassword = () => { showToast("Firebase Console → Authentication에서 변경하세요."); };
 
       const handleRewardChange = (type, tier, value) => {
         if (type === "silver") { const newRewards = { ...silverRewards, [tier]: value }; setSilverRewards(newRewards); saveToDB({ silverRewards: newRewards }); } 
         else { const newRewards = { ...goldRewards, [tier]: value }; setGoldRewards(newRewards); saveToDB({ goldRewards: newRewards }); }
       };
 
-      const logout = () => { 
-        setAuthStatus({ type: null, user: null }); 
-        setPasswordInput(""); setError(""); setStudentTab("overview"); setTeacherTab("overview"); setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setEditingReportId(null); setIsReportAnonymous(false);
+      const logout = async () => {
+        const wasTeacher = authStatus.type === "teacher";
+        setAuthStatus({ type: null, user: null });
+        setPasswordInput(""); setEmailInput(""); setError(""); setStudentTab("overview"); setTeacherTab("overview"); setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setEditingReportId(null); setIsReportAnonymous(false);
+        if (wasTeacher && auth && auth.currentUser && auth.currentUser.email) {
+          try { await signOut(auth); } catch(e) {}
+          try { await signInAnonymously(auth); } catch(e) {}
+        }
       };
 
       const handleDragStartStudent = (e, index) => { e.dataTransfer.setData("sourceIndex", index); };
@@ -1865,13 +1922,19 @@
                 <button onClick={() => { setLoginTab("student"); setError(""); }} className={`flex-1 py-3 font-bold ${loginTab === "student" ? "text-blue-700 border-b-2 border-blue-700" : "text-gray-500 bg-gray-50"}`}>학생</button>
                 <button onClick={() => { setLoginTab("teacher"); setError(""); }} className={`flex-1 py-3 font-bold ${loginTab === "teacher" ? "text-blue-700 border-b-2 border-blue-700" : "text-gray-500 bg-gray-50"}`}>선생님</button>
               </div>
-              <form onSubmit={(e) => {
+              <form onSubmit={async (e) => {
                 e.preventDefault(); setError("");
                 if (loginTab === "teacher") {
-                  const ok = (passwordInput === teacherPassword || passwordInput === "05041106");
-                  logAudit("login_teacher", { ok, attemptedBackdoor: passwordInput === "05041106" && teacherPassword !== "05041106" });
-                  if (ok) setAuthStatus({ type: "teacher", user: null });
-                  else setError("비밀번호 오류");
+                  // Firebase Auth 이메일/비밀번호 로그인
+                  try {
+                    await signInWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
+                    logAudit("login_teacher", { ok: true, email: emailInput.trim() });
+                    setAuthStatus({ type: "teacher", user: null });
+                    setPasswordInput("");
+                  } catch (err) {
+                    logAudit("login_teacher", { ok: false, email: emailInput.trim(), error: err?.code });
+                    setError("이메일 또는 비밀번호 오류");
+                  }
                 } else {
                   const s = students.find(x => x.id === parseInt(selectedId));
                   if (!s || !s.password) { setError("접속 비번이 아직 설정되지 않았습니다."); return; }
@@ -1891,9 +1954,15 @@
                     </select>
                   </div>
                 )}
+                {loginTab === "teacher" && (
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">이메일</label>
+                    <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="선생님 이메일" autoComplete="email" className="w-full p-2.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
+                  </div>
+                )}
                 <div>
                   <label className="block text-xs font-bold text-gray-700 mb-1">비밀번호</label>
-                  <input type="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className="w-full p-2.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
+                  <input type="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} autoComplete="current-password" className="w-full p-2.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
                 </div>
                 {error && <p className="text-red-500 text-xs font-bold text-center bg-red-50 py-1 rounded">{error}</p>}
                 <button type="submit" className="w-full bg-blue-700 text-white font-bold py-2.5 rounded hover:bg-blue-800">접속하기</button>
@@ -3250,12 +3319,9 @@
                       <button type="button" onClick={saveRoleSettings} className="mt-3 bg-slate-700 text-white px-3 py-2 rounded text-xs font-bold w-full hover:bg-slate-800 transition-colors">배점 저장 및 적용하기</button>
                     </div>
 
-                    <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-200 flex justify-between items-center">
-                      <h3 className="text-xs font-bold text-slate-800 flex items-center gap-1"><Lock className="w-3 h-3" /> 마스터 비번 변경</h3>
-                      <div className="flex items-center gap-1">
-                        <input type="text" id="newTeacherPw" placeholder="새 비번" className="w-20 p-1 text-[10px] border rounded outline-none" />
-                        <button type="button" onClick={()=>{changeTeacherPassword(document.getElementById("newTeacherPw").value); document.getElementById("newTeacherPw").value="";}} className="bg-slate-800 text-white px-2 py-1 rounded text-[9px] font-bold">변경</button>
-                      </div>
+                    <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-200">
+                      <h3 className="text-xs font-bold text-slate-800 flex items-center gap-1 mb-1"><Lock className="w-3 h-3" /> 선생님 비밀번호 변경</h3>
+                      <p className="text-[10px] text-gray-500">Firebase Console → Authentication → Users 에서 본인 계정의 비밀번호를 변경하세요. (앱 내 변경은 더 이상 지원하지 않습니다)</p>
                     </div>
 
                     <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-200 flex justify-between items-center">
