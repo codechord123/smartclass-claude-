@@ -123,6 +123,7 @@
 
       const [reportForm, setReportForm] = useState({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" });
       const [isReportAnonymous, setIsReportAnonymous] = useState(false);
+      const [submittingReport, setSubmittingReport] = useState(false);
       const [expandedReportId, setExpandedReportId] = useState(null);
       const [editingReportId, setEditingReportId] = useState(null);
       const [reportCommentInputs, setReportCommentInputs] = useState({});
@@ -928,13 +929,15 @@
       };
 
       const submitReadingReport = async (saveAsDraft = false) => {
+        if (submittingReport) return; // 중복 클릭 차단
         const { title, author, publisher, scene, quote, summary, thoughts } = reportForm;
-        if (saveAsDraft) { if (!title.trim()) return showToast("임시저장을 위해 '책 제목'은 최소한 입력해주세요."); } 
+        if (saveAsDraft) { if (!title.trim()) return showToast("임시저장을 위해 '책 제목'은 최소한 입력해주세요."); }
         else {
           if (!title.trim() || !author.trim() || !publisher.trim()) return showToast("제목, 지은이, 출판사를 모두 입력해주세요.");
           const totalLength = (scene||"").length + (quote||"").length + (summary||"").length + (thoughts||"").length;
           if (totalLength < readingCharLimit) return showToast(`본문은 ${readingCharLimit}자 이상이어야 정식 제출이 가능합니다. (현재 ${totalLength}자) 🐢`);
         }
+        setSubmittingReport(true);
 
         const s = students.find(x => x.id === authStatus.user.id);
         const reportIdToSave = editingReportId || (Date.now() + "_" + Math.random().toString(36).substring(2, 9));
@@ -943,35 +946,39 @@
         const existingReport = editingReportId ? readingReports.find(r => r.id === editingReportId) : null;
         if(existingReport) nR.comments = existingReport.comments || [];
 
-        // 감상문 본문 저장 (실패 시 토스트로 알림)
         try {
-          if (editingReportId) await updateDoc(doc(db, "readingReports", String(editingReportId)), nR);
-          else await setDoc(doc(db, "readingReports", String(nR.id)), nR);
-        } catch (e) {
-          console.error("감상문 저장 실패:", e);
-          showToast("감상문 저장 실패: " + (e.code || e.message || "알 수 없는 오류"));
-          return;
-        }
+          // 감상문 본문 저장 (실패 시 토스트로 알림)
+          try {
+            if (editingReportId) await updateDoc(doc(db, "readingReports", String(editingReportId)), nR);
+            else await setDoc(doc(db, "readingReports", String(nR.id)), nR);
+          } catch (e) {
+            console.error("감상문 저장 실패:", e);
+            showToast("감상문 저장 실패: " + (e.code || e.message || "알 수 없는 오류"));
+            return;
+          }
 
-        if (!saveAsDraft && (!existingReport || existingReport.isDraft)) {
-            setBooksRead(prev => ({ ...prev, [s.id]: (prev[s.id] || 0) + 1 }));
-            // 학생 쓰기 가능 위치: sharedRecords.booksRead (실패해도 본문은 저장되므로 진행)
-            try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`booksRead.${s.id}`]: increment(1) }); }
-            catch(e) {
-              try { await setDoc(doc(db, "classData", "sharedRecords"), { booksRead: { [s.id]: 1 } }, { merge: true }); }
-              catch(e2) {
-                console.error("책 카운트 갱신 실패:", e2);
-                showToast("⚠️ 책 카운트 갱신 실패: " + (e2.code || e2.message) + " — 감상문은 저장됨");
+          if (!saveAsDraft && (!existingReport || existingReport.isDraft)) {
+              setBooksRead(prev => ({ ...prev, [s.id]: (prev[s.id] || 0) + 1 }));
+              // 학생 쓰기 가능 위치: sharedRecords.booksRead (실패해도 본문은 저장되므로 진행)
+              try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`booksRead.${s.id}`]: increment(1) }); }
+              catch(e) {
+                try { await setDoc(doc(db, "classData", "sharedRecords"), { booksRead: { [s.id]: 1 } }, { merge: true }); }
+                catch(e2) {
+                  console.error("책 카운트 갱신 실패:", e2);
+                  showToast("⚠️ 책 카운트 갱신 실패: " + (e2.code || e2.message) + " — 감상문은 저장됨");
+                }
               }
-            }
-        }
+          }
 
-        setReadingReports(prev => sortByIdDesc([nR, ...prev.filter(r => String(r.id) !== String(nR.id))]));
-        if (saveAsDraft) { setEditingReportId(reportIdToSave); showToast("임시저장되었습니다. 화면에서 이어서 작성하세요! 💾"); }
-        else {
-            setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setEditingReportId(null); setIsReportAnonymous(false);
-            showToast(editingReportId ? "감상문이 정식 수정 및 등록되었습니다! 🐢" : "감상문이 등록되고 1권이 누적되었습니다! 🐢");
-            if (authStatus.type === "student") setStudentReadingSubTab("board");
+          setReadingReports(prev => sortByIdDesc([nR, ...prev.filter(r => String(r.id) !== String(nR.id))]));
+          if (saveAsDraft) { setEditingReportId(reportIdToSave); showToast("임시저장되었습니다. 화면에서 이어서 작성하세요! 💾"); }
+          else {
+              setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setEditingReportId(null); setIsReportAnonymous(false);
+              showToast(editingReportId ? "감상문이 정식 수정 및 등록되었습니다! 🐢" : "감상문이 등록되고 1권이 누적되었습니다! 🐢");
+              if (authStatus.type === "student") setStudentReadingSubTab("board");
+          }
+        } finally {
+          setSubmittingReport(false);
         }
       };
 
@@ -2298,11 +2305,18 @@
                                 {editingReportId && <button type="button" onClick={(e) => { e.preventDefault(); deleteReadingReport(editingReportId); }} className="text-red-500 bg-red-50 font-bold py-2 px-4 rounded-lg text-xs shadow-sm hover:bg-red-100 flex items-center gap-1"><Trash2 className="w-3.5 h-3.5"/> 삭제</button>}
                                 {editingReportId && <button type="button" onClick={cancelEditingReport} className="text-gray-600 bg-gray-200 font-bold py-2 px-4 rounded-lg text-xs shadow-sm hover:bg-gray-300">취소</button>}
                                 {(!editingReportId || readingReports.find(r => r.id === editingReportId)?.isDraft) && (
-                                  <button type="button" onClick={() => submitReadingReport(true)} className="bg-slate-500 hover:bg-slate-600 text-white font-bold py-2 px-4 rounded-lg text-xs shadow-sm transition-colors flex items-center gap-1"><Save className="w-3.5 h-3.5"/> 임시저장</button>
+                                  <button type="button" disabled={submittingReport} onClick={() => submitReadingReport(true)} className={`text-white font-bold py-2 px-4 rounded-lg text-xs shadow-sm transition-colors flex items-center gap-1 ${submittingReport ? 'bg-slate-300 cursor-not-allowed' : 'bg-slate-500 hover:bg-slate-600'}`}><Save className="w-3.5 h-3.5"/> {submittingReport ? "전송 중..." : "임시저장"}</button>
                                 )}
-                                <button type="button" onClick={() => submitReadingReport(false)} disabled={(reportForm.scene||"").length + (reportForm.quote||"").length + (reportForm.summary||"").length + (reportForm.thoughts||"").length < readingCharLimit} className={`text-white font-bold py-2 px-4 rounded-lg text-xs shadow-sm transition-colors ${(reportForm.scene||"").length + (reportForm.quote||"").length + (reportForm.summary||"").length + (reportForm.thoughts||"").length >= readingCharLimit ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-emerald-300 cursor-not-allowed opacity-70 flex items-center gap-1'}`}>
-                                  {editingReportId ? (readingReports.find(r => r.id === editingReportId)?.isDraft ? "정식 등록 (+1권)" : "수정 완료") : "제출하고 1권 추가"}
-                                </button>
+                                {(() => {
+                                  const totalLen = (reportForm.scene||"").length + (reportForm.quote||"").length + (reportForm.summary||"").length + (reportForm.thoughts||"").length;
+                                  const lenOK = totalLen >= readingCharLimit;
+                                  const disabled = !lenOK || submittingReport;
+                                  return (
+                                    <button type="button" onClick={() => submitReadingReport(false)} disabled={disabled} className={`text-white font-bold py-2 px-4 rounded-lg text-xs shadow-sm transition-colors flex items-center gap-1 ${submittingReport ? 'bg-emerald-300 cursor-not-allowed' : (lenOK ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-emerald-300 cursor-not-allowed opacity-70')}`}>
+                                      {submittingReport ? "전송 중..." : (editingReportId ? (readingReports.find(r => r.id === editingReportId)?.isDraft ? "정식 등록 (+1권)" : "수정 완료") : "제출하고 1권 추가")}
+                                    </button>
+                                  );
+                                })()}
                               </div>
                             </div>
                           </div>
