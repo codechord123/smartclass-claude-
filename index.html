@@ -491,39 +491,49 @@
                 invalidateCache();
               }
               
-              applyMainState(data);
-
-              // 학생 또래평가/거북이/책카운트 별도 문서 로드 + 로컬 records/booksRead에 병합
+              // 학생 또래평가/거북이/책카운트 별도 문서 로드 — mainState 적용 전에 미리 받아둠
+              let sharedData = null;
               try {
-                const sharedRef = doc(db, "classData", "sharedRecords");
-                const sharedSnap = await getDoc(sharedRef);
-                if (sharedSnap.exists()) {
-                  const sd = sharedSnap.data();
-                  const peer = sd.peer || {};
-                  setSharedPeer(peer);
-                  // 로컬 records에 peer 데이터 병합 (같은 (date,checker,target)이면 sharedPeer 우선)
-                  setRecords(prev => {
-                    const merged = { ...(prev || {}) };
-                    Object.entries(peer).forEach(([date, dR]) => {
-                      merged[date] = { ...(merged[date] || {}) };
-                      Object.entries(dR || {}).forEach(([cId, tgts]) => {
-                        merged[date][cId] = { ...(merged[date][cId] || {}), ...(tgts || {}) };
-                      });
-                    });
-                    return merged;
+                const sharedSnap = await getDoc(doc(db, "classData", "sharedRecords"));
+                if (sharedSnap.exists()) sharedData = sharedSnap.data();
+              } catch (e) { console.error("sharedRecords 로드 에러:", e); }
+
+              // 두 소스를 머지해서 데이터 완성 후 한 번에 적용 (레이스 컨디션 방지)
+              const mergedData = { ...data };
+              if (sharedData) {
+                const peer = sharedData.peer || {};
+                setSharedPeer(peer);
+                // records에 peer 데이터 병합
+                const mergedRecords = { ...(data.records || {}) };
+                Object.entries(peer).forEach(([date, dR]) => {
+                  mergedRecords[date] = { ...(mergedRecords[date] || {}) };
+                  Object.entries(dR || {}).forEach(([cId, tgts]) => {
+                    mergedRecords[date][cId] = { ...(mergedRecords[date][cId] || {}), ...(tgts || {}) };
                   });
-                  // booksRead: mainState값에 sharedRecords 증감 합산
-                  if (sd.booksRead) {
-                    setBooksRead(prev => {
-                      const merged = { ...(prev || {}) };
-                      Object.entries(sd.booksRead).forEach(([sid, delta]) => {
-                        merged[sid] = Math.max(0, (merged[sid] || 0) + (Number(delta) || 0));
-                      });
-                      return merged;
-                    });
+                });
+                mergedData.records = mergedRecords;
+                // booksRead: mainState값에 sharedRecords 증감 합산
+                if (sharedData.booksRead) {
+                  const mergedBooks = { ...(data.booksRead || {}) };
+                  Object.entries(sharedData.booksRead).forEach(([sid, delta]) => {
+                    mergedBooks[sid] = Math.max(0, (mergedBooks[sid] || 0) + (Number(delta) || 0));
+                  });
+                  mergedData.booksRead = mergedBooks;
+                }
+              }
+              applyMainState(mergedData);
+
+              // 자동 복구: mainState.booksRead가 비었는데 readingReports에 정식 글이 있으면 알림
+              try {
+                const mainHasBooks = Object.values(mergedData.booksRead || {}).some(v => v > 0);
+                if (!mainHasBooks && authStatus.type === "teacher") {
+                  const rrSnap = await getDocs(collection(db, "readingReports"));
+                  const nonDraft = rrSnap.docs.filter(d => d.data() && !d.data().isDraft).length;
+                  if (nonDraft > 0) {
+                    showToast(`⚠️ 책 카운트가 비어있는데 감상문은 ${nonDraft}건 있습니다. 설정 → 책 카운트 재계산을 실행하세요.`);
                   }
                 }
-              } catch (e) { console.error("sharedRecords 로드 에러:", e); }
+              } catch(e) { console.warn("자동 복구 진단 실패:", e); }
 
               // 함정 강화: 세션당 1회 records 학생별 합계 스냅샷 기록.
               // 외부(F12/스크립트) 쓰기로 점수가 바뀌면 다음 스냅샷과 비교해 추적 가능.
@@ -655,14 +665,16 @@
       const getTotalBooksRead = () => Object.values(booksRead || {}).reduce((acc, curr) => acc + curr, 0);
 
       const adjustTeacherReading = async (studentId, delta) => {
-        setBooksRead(prev => ({ ...prev, [studentId]: Math.max(0, (prev[studentId] || 0) + delta) })); 
+        const newLocalVal = Math.max(0, ((booksRead || {})[studentId] || 0) + delta);
+        setBooksRead(prev => ({ ...prev, [studentId]: Math.max(0, (prev[studentId] || 0) + delta) }));
         try {
             await updateDoc(doc(db, "classData", "mainState"), {
                 [`booksRead.${studentId}`]: increment(delta)
             });
             invalidateCache();
         } catch (e) {
-            await setDoc(doc(db, "classData", "mainState"), { booksRead: { [studentId]: Math.max(0, delta) } }, { merge: true });
+            // 폴백: 누적 결과값으로 저장 (절대 delta가 아님)
+            await setDoc(doc(db, "classData", "mainState"), { booksRead: { [studentId]: newLocalVal } }, { merge: true });
             invalidateCache();
         }
         showToast(`독서 마라톤 ${delta>0?'+1권 처리됨':'-1권 차감됨'}`);
@@ -962,7 +974,9 @@
               // 학생 쓰기 가능 위치: sharedRecords.booksRead (실패해도 본문은 저장되므로 진행)
               try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`booksRead.${s.id}`]: increment(1) }); }
               catch(e) {
-                try { await setDoc(doc(db, "classData", "sharedRecords"), { booksRead: { [s.id]: 1 } }, { merge: true }); }
+                // 폴백: 현재 표시값+1을 기록 (sharedRecords가 아예 없을 때만 실행됨)
+                const fallbackVal = ((booksRead || {})[s.id] || 0) + 1;
+                try { await setDoc(doc(db, "classData", "sharedRecords"), { booksRead: { [s.id]: fallbackVal } }, { merge: true }); }
                 catch(e2) {
                   console.error("책 카운트 갱신 실패:", e2);
                   showToast("⚠️ 책 카운트 갱신 실패: " + (e2.code || e2.message) + " — 감상문은 저장됨");
@@ -1002,7 +1016,8 @@
             if (!isDraft) {
                 setBooksRead(prev => ({ ...prev, [authorId]: Math.max(0, (prev[authorId] || 0) - 1) }));
                 // 학생 쓰기 가능 위치: sharedRecords.booksRead
-                await updateDoc(doc(db, "classData", "sharedRecords"), { [`booksRead.${authorId}`]: increment(-1) }).catch(()=>{});
+                try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`booksRead.${authorId}`]: increment(-1) }); }
+                catch(e) { console.error("책 카운트 차감 실패:", e); showToast("⚠️ 책 카운트 차감 실패: " + (e.code || e.message)); }
             }
             setConfirmModal(null); showToast(!isDraft ? "삭제 및 1권 차감이 완료되었습니다." : "삭제되었습니다.");
           },
@@ -1186,6 +1201,7 @@
       // 모든 학생의 booksRead를 정확히 다시 설정.
       const recomputeBookCounts = async () => {
         if (!db) return showToast("로그인 정보가 없어 실행할 수 없습니다.");
+        if (authStatus.type !== "teacher") return showToast("선생님으로 로그인 후 사용하세요.");
         setConfirmModal({
           title: "책 카운트 재계산",
           message: "독서감상문 컬렉션을 기준으로 모든 학생의 책 권수를 정확히 다시 계산합니다.\n(임시저장 제외)\n\n진행하시겠습니까?",
@@ -1194,20 +1210,28 @@
             try {
               const snap = await getDocs(collection(db, "readingReports"));
               const counts = {};
+              let totalDocs = snap.size, draftDocs = 0, noStudentId = 0;
               snap.docs.forEach(d => {
                 const r = d.data();
-                if (r && !r.isDraft && r.studentId !== undefined && r.studentId !== null) {
-                  counts[r.studentId] = (counts[r.studentId] || 0) + 1;
-                }
+                if (!r) return;
+                if (r.isDraft) { draftDocs++; return; }
+                if (r.studentId === undefined || r.studentId === null) { noStudentId++; return; }
+                counts[r.studentId] = (counts[r.studentId] || 0) + 1;
               });
+              console.log("[재계산] 총 문서:", totalDocs, "임시저장:", draftDocs, "studentId없음:", noStudentId, "카운트:", counts);
+              const total = Object.values(counts).reduce((a,b)=>a+b, 0);
+              if (totalDocs > 0 && total === 0) {
+                showToast(`⚠️ 문서는 ${totalDocs}개인데 정식(isDraft:false) 글이 0건입니다. 콘솔(F12) 확인.`);
+                return;
+              }
               // mainState.booksRead = 실제 권수, sharedRecords.booksRead = {} (중복 합산 방지)
               await updateDoc(doc(db, "classData", "mainState"), { booksRead: counts });
               invalidateCache();
-              await updateDoc(doc(db, "classData", "sharedRecords"), { booksRead: {} }).catch(()=>{});
+              try { await updateDoc(doc(db, "classData", "sharedRecords"), { booksRead: {} }); }
+              catch(e) { console.warn("sharedRecords 초기화 건너뜀(존재하지 않음):", e.code); }
               setBooksRead(counts);
-              logAudit("recompute_books", { counts });
-              const total = Object.values(counts).reduce((a,b)=>a+b, 0);
-              showToast(`✅ 책 카운트 재계산 완료: 총 ${total}권`);
+              logAudit("recompute_books", { counts, totalDocs, draftDocs, noStudentId });
+              showToast(`✅ 재계산 완료: 정식 ${total}권 (전체문서 ${totalDocs}, 임시 ${draftDocs})`);
             } catch(e) {
               console.error(e);
               showToast("재계산 실패: " + (e.code || e.message));
