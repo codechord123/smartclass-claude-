@@ -678,15 +678,23 @@
       const adjustTeacherReading = async (studentId, delta) => {
         const newLocalVal = Math.max(0, ((booksRead || {})[studentId] || 0) + delta);
         setBooksRead(prev => ({ ...prev, [studentId]: Math.max(0, (prev[studentId] || 0) + delta) }));
+        // 선생님은 mainState.booksRead에, 학생(거북이 독서 지킴이 등)은 sharedRecords.booksRead에 기록
+        const targetDocName = (authStatus.type === "teacher") ? "mainState" : "sharedRecords";
         try {
-            await updateDoc(doc(db, "classData", "mainState"), {
+            await updateDoc(doc(db, "classData", targetDocName), {
                 [`booksRead.${studentId}`]: increment(delta)
             });
-            invalidateCache();
+            if (targetDocName === "mainState") invalidateCache();
         } catch (e) {
             // 폴백: 누적 결과값으로 저장 (절대 delta가 아님)
-            await setDoc(doc(db, "classData", "mainState"), { booksRead: { [studentId]: newLocalVal } }, { merge: true });
-            invalidateCache();
+            try {
+              await setDoc(doc(db, "classData", targetDocName), { booksRead: { [studentId]: newLocalVal } }, { merge: true });
+              if (targetDocName === "mainState") invalidateCache();
+            } catch(e2) {
+              console.error("책 카운트 갱신 실패:", e2);
+              showToast("⚠️ 책 카운트 갱신 실패: " + (e2.code || e2.message));
+              return;
+            }
         }
         showToast(`독서 마라톤 ${delta>0?'+1권 처리됨':'-1권 차감됨'}`);
       };
@@ -1351,7 +1359,10 @@
         if (dbUser && db) {
             // 보안 규칙에 따라 학생도 쓸 수 있는 sharedRecords에 저장
             try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`peer.${today}.${checkerId}.${targetId}`]: newVal }); }
-            catch (e) { await setDoc(doc(db, "classData", "sharedRecords"), { peer: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); }
+            catch (e) {
+              try { await setDoc(doc(db, "classData", "sharedRecords"), { peer: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); }
+              catch(e2) { console.error("또래평가 저장 실패:", e2); showToast("⚠️ 또래평가 저장 실패: " + (e2.code || e2.message)); return; }
+            }
             logAudit("score_peer", { date: today, checkerId, checkerRole, targetId, point, by: authStatus.type, byId: authStatus.user?.id });
         }
       };
@@ -1362,7 +1373,10 @@
         setSharedPeer((prev) => { const safePrev = prev||{}; return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } });
         if (dbUser && db) {
             try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`peer.${today}.${checkerId}.${targetId}`]: newVal }); }
-            catch (e) { await setDoc(doc(db, "classData", "sharedRecords"), { peer: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); }
+            catch (e) {
+              try { await setDoc(doc(db, "classData", "sharedRecords"), { peer: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); }
+              catch(e2) { console.error("거북이 점수 저장 실패:", e2); showToast("⚠️ 거북이 점수 저장 실패: " + (e2.code || e2.message)); return; }
+            }
             logAudit("score_turtle", { date: today, checkerId, targetId, newPts, by: authStatus.type, byId: authStatus.user?.id });
         }
       };
