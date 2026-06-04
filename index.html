@@ -676,6 +676,7 @@
       const getTotalBooksRead = () => Object.values(booksRead || {}).reduce((acc, curr) => acc + curr, 0);
 
       const adjustTeacherReading = async (studentId, delta) => {
+        if (!dbUser) { showToast("⚠️ 인증 안된 상태입니다. 새로고침 후 다시 시도하세요."); return; }
         const newLocalVal = Math.max(0, ((booksRead || {})[studentId] || 0) + delta);
         setBooksRead(prev => ({ ...prev, [studentId]: Math.max(0, (prev[studentId] || 0) + delta) }));
         // 선생님은 mainState.booksRead에, 학생(거북이 독서 지킴이 등)은 sharedRecords.booksRead에 기록
@@ -1209,6 +1210,7 @@
           return { ...safePrev, [date]: { ...dayData, [checkerId]: { ...checkerData, [studentId]: curVal + delta } } };
         });
 
+        if (!dbUser) { showToast("⚠️ 인증 안된 상태입니다. 새로고침 후 다시 시도하세요."); return; }
         if (dbUser && db) {
           try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${date}.${checkerId}.${studentId}`]: increment(delta) }); invalidateCache(); if (delta > 0) showToast(`+1점 처리되었습니다.`); if (delta < 0) showToast(`-1점 처리되었습니다.`); }
           catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [checkerId]: { [studentId]: delta } } } }, { merge: true }); invalidateCache(); }
@@ -1356,6 +1358,7 @@
            return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } }
         });
 
+        if (!dbUser) { showToast("⚠️ 인증 안된 상태입니다. 새로고침 후 다시 시도하세요."); return; }
         if (dbUser && db) {
             // 보안 규칙에 따라 학생도 쓸 수 있는 sharedRecords에 저장
             try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`peer.${today}.${checkerId}.${targetId}`]: newVal }); }
@@ -1371,6 +1374,7 @@
         const today = getLocalDateString(new Date()); let newVal = false; if (newPts !== 0) newVal = `[거북이] ${newPts}`;
         setRecords((prev) => { const safePrev = prev||{}; return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } });
         setSharedPeer((prev) => { const safePrev = prev||{}; return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } });
+        if (!dbUser) { showToast("⚠️ 인증 안된 상태입니다. 새로고침 후 다시 시도하세요."); return; }
         if (dbUser && db) {
             try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`peer.${today}.${checkerId}.${targetId}`]: newVal }); }
             catch (e) {
@@ -2197,6 +2201,11 @@
 
           content = (
             <div className="min-h-screen bg-slate-100 p-2 md:p-4 text-gray-800">
+              {!dbUser && (
+                <div className="max-w-4xl mx-auto bg-red-600 text-white p-2 rounded-t-xl text-center text-xs font-bold">
+                  ⚠️ Firebase 익명 인증 실패 — 점수 변경이 서버에 저장되지 않습니다. 선생님께 알려주세요. (Firebase Console에서 Anonymous Auth 활성화 필요)
+                </div>
+              )}
               <div className="max-w-4xl mx-auto flex flex-col h-full min-h-[95vh] bg-white rounded-xl shadow-lg overflow-hidden">
                 <header className="bg-blue-700 text-white p-3 flex justify-between items-center shrink-0">
                   <div className="flex items-center gap-2"><UserCheck className="w-8 h-8 text-blue-200 bg-blue-800 p-1.5 rounded-full" /><div><h1 className="text-sm font-black">{myInfo.id}번 {myInfo.name}</h1><p className="text-xs font-bold text-blue-200">역할: <span className="bg-blue-100 text-blue-800 px-1 rounded">{myInfo.role}</span></p></div></div>
