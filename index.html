@@ -1300,14 +1300,22 @@
                 showToast(`⚠️ 문서는 ${totalDocs}개인데 정식(isDraft:false) 글이 0건입니다. 콘솔(F12) 확인.`);
                 return;
               }
-              // mainState.booksRead = 실제 권수, sharedRecords.booksRead = {} (중복 합산 방지)
+              // mainState.booksRead = 정식 감상문 권수만 (거북이 peer 가산분은 sharedRecords에 보존)
               await updateDoc(doc(db, "classData", "mainState"), { booksRead: counts });
               invalidateCache();
-              try { await updateDoc(doc(db, "classData", "sharedRecords"), { booksRead: {} }); }
-              catch(e) { console.warn("sharedRecords 초기화 건너뜀(존재하지 않음):", e.code); }
-              setBooksRead(counts);
+              setBooksRead(prev => {
+                // 로컬도 동일하게: mainState 부분만 counts로, sharedPeer 가산분 유지
+                const merged = { ...counts };
+                // 기존 prev에서 counts에 없는 sharedRecords 가산분만 더해줌
+                Object.entries(prev || {}).forEach(([sid, v]) => {
+                  const mainPart = counts[sid] || 0;
+                  const extra = (v || 0) - mainPart;
+                  if (extra !== 0) merged[sid] = (merged[sid] || 0) + extra;
+                });
+                return merged;
+              });
               logAudit("recompute_books", { counts, totalDocs, draftDocs, noStudentId });
-              showToast(`✅ 재계산 완료: 정식 ${total}권 (전체문서 ${totalDocs}, 임시 ${draftDocs})`);
+              showToast(`✅ 재계산 완료: 정식 ${total}권 (전체문서 ${totalDocs}, 임시 ${draftDocs}). 거북이 추가분은 보존됨.`);
             } catch(e) {
               console.error(e);
               showToast("재계산 실패: " + (e.code || e.message));
