@@ -1273,6 +1273,106 @@
         });
       };
 
+      // 역할별 점수 진단: records를 훑어 역할별 합계 + 손실 가능성을 분석
+      const [roleDiag, setRoleDiag] = useState(null);
+      const diagnoseRoleScores = async () => {
+        if (!db) return showToast("로그인 후 사용하세요.");
+        try {
+          // 1) mainState만 따로 / sharedRecords만 따로 / merged 비교
+          const msSnap = await getDoc(doc(db, "classData", "mainState"));
+          const srSnap = await getDoc(doc(db, "classData", "sharedRecords"));
+          const mainRecords = (msSnap.data() || {}).records || {};
+          const sharedPeerData = (srSnap.exists() ? srSnap.data() : {}).peer || {};
+
+          // 역할별 집계 (mainState 기준)
+          const byRoleMain = {};
+          const byRoleShared = {};
+          const overrides = []; // mainState엔 +N이 있는데 sharedRecords가 false로 덮음
+          const undefinedRoles = new Set(); // roleSettings에 없는 역할
+          let mainCount = 0, sharedCount = 0;
+
+          const extractRole = (val, cId) => {
+            if (cId === "teacher_racing" || cId === "teacher_speaking" || cId === "teacher_listening" || cId === "teacher_communication") return "선생님 권한 부여";
+            if (typeof val === "string" && val !== "false" && val !== "") {
+              if (val.startsWith("[v] ")) return val.substring(4).split("_").slice(1).join("_") || "(이름없음)";
+              if (val.startsWith("[-] ")) return val.substring(4);
+              if (val.startsWith("[거북이] ")) return "거북이 독서 지킴이";
+              return val;
+            }
+            return null;
+          };
+
+          Object.entries(mainRecords).forEach(([date, dR]) => {
+            if (!dR || typeof dR !== 'object') return;
+            Object.entries(dR).forEach(([cId, tgts]) => {
+              if (!tgts || typeof tgts !== 'object') return;
+              Object.entries(tgts).forEach(([tId, val]) => {
+                const p = getPoints(val);
+                const role = extractRole(val, cId);
+                if (role && p !== 0) {
+                  byRoleMain[role] = (byRoleMain[role] || 0) + Math.abs(p);
+                  mainCount++;
+                  if (role !== "선생님 권한 부여" && role !== "거북이 독서 지킴이" && !roleSettings[role]) {
+                    undefinedRoles.add(role);
+                  }
+                }
+                // sharedRecords의 같은 위치가 false로 덮어쓰는지 확인
+                if (p !== 0 && sharedPeerData[date]?.[cId]?.[tId] === false) {
+                  overrides.push({ date, cId, tId, val, lostPts: Math.abs(p), role });
+                }
+              });
+            });
+          });
+
+          Object.entries(sharedPeerData).forEach(([date, dR]) => {
+            if (!dR || typeof dR !== 'object') return;
+            Object.entries(dR).forEach(([cId, tgts]) => {
+              if (!tgts || typeof tgts !== 'object') return;
+              Object.entries(tgts).forEach(([tId, val]) => {
+                const p = getPoints(val);
+                const role = extractRole(val, cId);
+                if (role && p !== 0) {
+                  byRoleShared[role] = (byRoleShared[role] || 0) + Math.abs(p);
+                  sharedCount++;
+                }
+              });
+            });
+          });
+
+          const lostPts = overrides.reduce((a, b) => a + b.lostPts, 0);
+          const lostByRole = {};
+          overrides.forEach(o => { lostByRole[o.role] = (lostByRole[o.role] || 0) + o.lostPts; });
+
+          setRoleDiag({
+            byRoleMain, byRoleShared, mainCount, sharedCount,
+            overrides, lostPts, lostByRole,
+            undefinedRoles: Array.from(undefinedRoles)
+          });
+        } catch(e) { console.error(e); showToast("진단 실패: " + (e.code || e.message)); }
+      };
+
+      // 진단 결과에서 override(sharedRecords false → mainState 가림)를 일괄 제거
+      const restoreOverriddenScores = async () => {
+        if (!roleDiag || !roleDiag.overrides.length) return;
+        setConfirmModal({
+          title: "덮어쓴 점수 복구",
+          message: `mainState에 +N점이 있는데 sharedRecords가 false로 덮어 ${roleDiag.lostPts}점이 가려지고 있습니다.\n${roleDiag.overrides.length}건의 false 항목을 sharedRecords에서 제거하시겠습니까?\n(mainState의 원래 값이 다시 노출됩니다.)`,
+          onConfirm: async () => {
+            setConfirmModal(null);
+            try {
+              const updates = {};
+              roleDiag.overrides.forEach(o => {
+                updates[`peer.${o.date}.${o.cId}.${o.tId}`] = deleteField();
+              });
+              await updateDoc(doc(db, "classData", "sharedRecords"), updates);
+              showToast(`✅ ${roleDiag.overrides.length}건 복구 완료. 새로고침하세요.`);
+              logAudit("restore_overrides", { count: roleDiag.overrides.length, lostPts: roleDiag.lostPts });
+              setRoleDiag(null);
+            } catch(e) { showToast("복구 실패: " + (e.code || e.message)); }
+          }
+        });
+      };
+
       // 책 카운트 재계산: readingReports 컬렉션의 비-임시저장 글 개수를 기준으로
       // 모든 학생의 booksRead를 정확히 다시 설정.
       const recomputeBookCounts = async () => {
@@ -3275,6 +3375,47 @@
 
                 {teacherTab === "settings" && (
                   <div className="space-y-4 animate-in fade-in max-w-5xl mx-auto">
+
+                    {/* 🔍 역할 점수 진단 */}
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-orange-200">
+                      <div className="flex justify-between items-center mb-2">
+                        <div>
+                          <h2 className="text-sm font-black text-orange-800 mb-1 flex items-center gap-1.5">🔍 역할 점수 진단</h2>
+                          <p className="text-[10px] text-gray-500">역할별 점수 합계와 잠재적 데이터 손실(override, 미정의 역할)을 검출합니다.</p>
+                        </div>
+                        <button type="button" onClick={diagnoseRoleScores} className="bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold py-2 px-4 rounded-lg shadow-sm transition-colors whitespace-nowrap">진단 실행</button>
+                      </div>
+                      {roleDiag && (
+                        <div className="mt-3 border-t border-orange-100 pt-3 space-y-3 text-[11px]">
+                          {roleDiag.lostPts > 0 && (
+                            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                              <div className="font-black text-red-800 mb-1">⚠️ 손실 의심: {roleDiag.lostPts}점 ({roleDiag.overrides.length}건)</div>
+                              <div className="text-[10px] text-red-700 mb-2">mainState에 점수가 있는데 sharedRecords의 false 값이 덮어 화면에서 안 보임. 원인: 학생이 평가를 clear했거나 시스템 동기화 문제.</div>
+                              <div className="text-[10px] text-red-700 mb-2">역할별 손실: {Object.entries(roleDiag.lostByRole).map(([r,p]) => `${r}: -${p}점`).join(", ") || "(없음)"}</div>
+                              <button type="button" onClick={restoreOverriddenScores} className="bg-red-600 hover:bg-red-700 text-white text-[10px] font-bold py-1.5 px-3 rounded">덮어쓴 점수 복구 (false 항목 제거)</button>
+                            </div>
+                          )}
+                          {roleDiag.undefinedRoles.length > 0 && (
+                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                              <div className="font-bold text-amber-800 mb-1">⚠️ roleSettings에 없는 역할: {roleDiag.undefinedRoles.join(", ")}</div>
+                              <div className="text-[10px] text-amber-700">이 역할로 부여된 점수는 기본값 +1로만 계산됩니다. ⚙️ 설정 → 역할별 배점에 등록하면 정확히 계산됩니다.</div>
+                            </div>
+                          )}
+                          <div>
+                            <div className="font-bold text-gray-700 mb-1">📊 역할별 점수 합계 (mainState 기준)</div>
+                            <div className="max-h-48 overflow-y-auto bg-gray-50 rounded p-2 space-y-0.5">
+                              {Object.entries(roleDiag.byRoleMain).sort((a,b)=>b[1]-a[1]).map(([r,p]) => (
+                                <div key={r} className="flex justify-between text-[10px]">
+                                  <span className="text-gray-700">{r}</span>
+                                  <span className="font-bold text-gray-900">{p}점 {roleDiag.byRoleShared[r] ? <span className="text-blue-600">(+{roleDiag.byRoleShared[r]} sharedRecords)</span> : ''}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="text-[10px] text-gray-500">총 entry — mainState: {roleDiag.mainCount}, sharedRecords: {roleDiag.sharedCount}</div>
+                        </div>
+                      )}
+                    </div>
 
                     {/* 📚 책 카운트 재계산 */}
                     <div className="bg-white p-4 rounded-xl shadow-sm border border-emerald-200">
