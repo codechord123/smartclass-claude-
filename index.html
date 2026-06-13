@@ -1275,6 +1275,8 @@
 
       // 역할별 점수 진단: records를 훑어 역할별 합계 + 손실 가능성을 분석
       const [roleDiag, setRoleDiag] = useState(null);
+      const [canonicalChoice, setCanonicalChoice] = useState({});
+      const [mergeInProgress, setMergeInProgress] = useState(false);
       const diagnoseRoleScores = async () => {
         if (!db) return showToast("로그인 후 사용하세요.");
         try {
@@ -1371,6 +1373,126 @@
             } catch(e) { showToast("복구 실패: " + (e.code || e.message)); }
           }
         });
+      };
+
+      // 유사한 역할명을 자동 그룹화
+      const computeRoleGroups = () => {
+        if (!roleDiag) return [];
+        const allNames = new Set([
+          ...Object.keys(roleDiag.byRoleMain || {}),
+          ...Object.keys(roleDiag.byRoleShared || {})
+        ]);
+        const groupKey = (name) => {
+          // "12. " 같은 숫자 prefix 제거 → 공백/구두점 제거 → 처음 숫자 나오기 전까지 또는 3글자
+          let cleaned = String(name).replace(/^\d+\.\s*/, "").trim();
+          let norm = cleaned.replace(/[\s,()\/&]/g, "");
+          let key = "";
+          for (let i = 0; i < norm.length; i++) {
+            if (/[0-9]/.test(norm[i])) break;
+            key += norm[i];
+            if (key.length >= 3) break;
+          }
+          return key || norm.substring(0, 3) || name;
+        };
+        const groups = {};
+        allNames.forEach(name => {
+          // 특수 이름은 제외
+          if (name === "선생님 권한 부여" || name === "거북이 독서 지킴이" || name === "이전 역할(기록됨)") return;
+          const k = groupKey(name);
+          if (!groups[k]) groups[k] = [];
+          groups[k].push(name);
+        });
+        // 2개 이상 변형 있는 그룹만, 그룹 내 점수합 큰 순
+        const result = [];
+        Object.entries(groups).forEach(([k, variants]) => {
+          if (variants.length < 2) return;
+          // 변형별 점수
+          const withPts = variants.map(v => ({
+            name: v,
+            pts: (roleDiag.byRoleMain[v] || 0) + (roleDiag.byRoleShared[v] || 0)
+          })).sort((a, b) => b.pts - a.pts);
+          result.push({ key: k, variants: withPts, total: withPts.reduce((s, x) => s + x.pts, 0) });
+        });
+        return result.sort((a, b) => b.total - a.total);
+      };
+
+      // 역할명 변형 통합: 모든 변형을 canonical로 치환 (records 안의 모든 형식 처리)
+      const mergeRoleVariants = async (variants, canonical) => {
+        if (!variants.length || !canonical) return showToast("통합할 이름과 변형을 선택하세요.");
+        if (mergeInProgress) return;
+        if (authStatus.type !== "teacher") return showToast("선생님으로 로그인 후 사용하세요.");
+        // canonical 자체는 변형에서 제외
+        const toReplace = variants.filter(v => v !== canonical);
+        if (!toReplace.length) return showToast("기준 이름과 동일한 변형만 있어 통합할 필요가 없습니다.");
+
+        setMergeInProgress(true);
+        try {
+          const msSnap = await getDoc(doc(db, "classData", "mainState"));
+          const srSnap = await getDoc(doc(db, "classData", "sharedRecords"));
+          const mainRecords = JSON.parse(JSON.stringify((msSnap.data() || {}).records || {}));
+          const sharedPeer = srSnap.exists() ? JSON.parse(JSON.stringify((srSnap.data() || {}).peer || {})) : {};
+
+          const replaceIn = (record) => {
+            let count = 0;
+            Object.keys(record).forEach(date => {
+              if (!record[date] || typeof record[date] !== "object") return;
+              Object.keys(record[date]).forEach(cId => {
+                if (!record[date][cId] || typeof record[date][cId] !== "object") return;
+                Object.keys(record[date][cId]).forEach(tId => {
+                  const val = record[date][cId][tId];
+                  if (typeof val !== "string") return;
+                  if (toReplace.includes(val)) {
+                    record[date][cId][tId] = canonical; count++;
+                  } else if (val.startsWith("[-] ")) {
+                    const rn = val.substring(4);
+                    if (toReplace.includes(rn)) { record[date][cId][tId] = "[-] " + canonical; count++; }
+                  } else if (val.startsWith("[v] ")) {
+                    const us = val.indexOf("_");
+                    if (us > 4) {
+                      const ptStr = val.substring(4, us);
+                      const rn = val.substring(us + 1);
+                      if (toReplace.includes(rn)) { record[date][cId][tId] = `[v] ${ptStr}_${canonical}`; count++; }
+                    }
+                  }
+                });
+              });
+            });
+            return count;
+          };
+
+          const mainChanges = replaceIn(mainRecords);
+          const sharedChanges = replaceIn(sharedPeer);
+
+          if (mainChanges > 0) {
+            await updateDoc(doc(db, "classData", "mainState"), { records: mainRecords });
+            invalidateCache();
+          }
+          if (sharedChanges > 0 && srSnap.exists()) {
+            await updateDoc(doc(db, "classData", "sharedRecords"), { peer: sharedPeer });
+          }
+          // rolePool에서 변형 제거 + canonical 보장
+          let newPool = rolePool.filter(r => !toReplace.includes(r));
+          if (!newPool.includes(canonical)) newPool = [...newPool, canonical];
+          if (newPool.length !== rolePool.length || newPool.includes(canonical) !== rolePool.includes(canonical)) {
+            setRolePool(newPool);
+            await saveToDB({ rolePool: newPool });
+          }
+          // 학생 데이터의 역할 필드도 변형이면 canonical로 교체
+          const updatedStudents = students.map(s => toReplace.includes(s.role) ? { ...s, role: canonical } : s);
+          if (JSON.stringify(updatedStudents) !== JSON.stringify(students)) {
+            setStudents(updatedStudents);
+            await saveToDB({ students: updatedStudents });
+          }
+
+          logAudit("merge_role_variants", { canonical, replaced: toReplace, mainChanges, sharedChanges });
+          showToast(`✅ '${canonical}'로 통합 완료: 변형 ${toReplace.length}개, 기록 ${mainChanges + sharedChanges}건`);
+          // 진단 결과 갱신
+          await diagnoseRoleScores();
+        } catch(e) {
+          console.error(e);
+          showToast("통합 실패: " + (e.code || e.message));
+        }
+        setMergeInProgress(false);
       };
 
       // 책 카운트 재계산: readingReports 컬렉션의 비-임시저장 글 개수를 기준으로
