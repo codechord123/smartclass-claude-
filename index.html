@@ -339,34 +339,52 @@
 
       const loadSuggestions = async () => {
         if (!db) return;
+        if (loadedRef.current.suggestions === "loading") return; // 중복 호출 방지
+        loadedRef.current.suggestions = "loading";
         setBoardLoading(prev => ({ ...prev, suggestions: true }));
         try {
           const snap = await getDocs(collection(db, "suggestions"));
           setSuggestions(sortByIdDesc(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))));
           loadedRef.current.suggestions = true;
-        } catch (e) { console.error("건의게시판 로드 에러:", e); showToast("건의게시판을 불러올 수 없습니다."); }
+        } catch (e) {
+          console.error("건의게시판 로드 에러:", e);
+          showToast("건의게시판을 불러올 수 없습니다.");
+          loadedRef.current.suggestions = false; // 실패 시 재시도 가능
+        }
         finally { setBoardLoading(prev => ({ ...prev, suggestions: false })); }
       };
 
       const loadReadingReports = async () => {
         if (!db) return;
+        if (loadedRef.current.readingReports === "loading") return;
+        loadedRef.current.readingReports = "loading";
         setBoardLoading(prev => ({ ...prev, readingReports: true }));
         try {
           const snap = await getDocs(collection(db, "readingReports"));
           setReadingReports(sortByIdDesc(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))));
           loadedRef.current.readingReports = true;
-        } catch (e) { console.error("독서감상문 로드 에러:", e); showToast("독서감상문을 불러올 수 없습니다."); }
+        } catch (e) {
+          console.error("독서감상문 로드 에러:", e);
+          showToast("독서감상문을 불러올 수 없습니다.");
+          loadedRef.current.readingReports = false;
+        }
         finally { setBoardLoading(prev => ({ ...prev, readingReports: false })); }
       };
 
       const loadPolls = async () => {
         if (!db) return;
+        if (loadedRef.current.polls === "loading") return;
+        loadedRef.current.polls = "loading";
         setBoardLoading(prev => ({ ...prev, polls: true }));
         try {
           const snap = await getDocs(collection(db, "polls"));
           setPolls(sortByIdDesc(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))));
           loadedRef.current.polls = true;
-        } catch (e) { console.error("투표 로드 에러:", e); showToast("투표를 불러올 수 없습니다."); }
+        } catch (e) {
+          console.error("투표 로드 에러:", e);
+          showToast("투표를 불러올 수 없습니다.");
+          loadedRef.current.polls = false;
+        }
         finally { setBoardLoading(prev => ({ ...prev, polls: false })); }
       };
 
@@ -1436,8 +1454,17 @@
         try {
           const msSnap = await getDoc(doc(db, "classData", "mainState"));
           const srSnap = await getDoc(doc(db, "classData", "sharedRecords"));
-          const mainRecords = JSON.parse(JSON.stringify((msSnap.data() || {}).records || {}));
+          const origRecords = (msSnap.data() || {}).records || {};
+          const mainRecords = JSON.parse(JSON.stringify(origRecords));
           const sharedPeer = srSnap.exists() ? JSON.parse(JSON.stringify((srSnap.data() || {}).peer || {})) : {};
+
+          // 안전장치: 원본 records가 비어있으면 통합할 게 없음
+          const origDateCount = Object.keys(origRecords).length;
+          if (origDateCount === 0) {
+            showToast("⚠️ mainState.records가 비어있어 통합할 게 없습니다.");
+            setMergeInProgress(false);
+            return;
+          }
 
           const replaceIn = (record) => {
             let count = 0;
@@ -1470,9 +1497,36 @@
           const mainChanges = replaceIn(mainRecords);
           const sharedChanges = replaceIn(sharedPeer);
 
+          if (mainChanges === 0 && sharedChanges === 0) {
+            showToast("⚠️ 치환된 기록 없음. 역할명 정확히 일치 확인하세요.");
+            setMergeInProgress(false);
+            return;
+          }
+
+          // 안전장치: 쓰기 전 mainRecords가 원본보다 작아졌으면 중단
+          const newDateCount = Object.keys(mainRecords).length;
+          if (newDateCount < origDateCount) {
+            console.error("[merge] 위험: 원본 날짜 수", origDateCount, "→", newDateCount, "감소");
+            showToast("⚠️ 데이터 무결성 경고로 통합 취소. 콘솔 확인.");
+            setMergeInProgress(false);
+            return;
+          }
+
           if (mainChanges > 0) {
             await updateDoc(doc(db, "classData", "mainState"), { records: mainRecords });
             invalidateCache();
+            // 로컬 records 상태도 즉시 갱신 (다음 로드 전까지 옛 이름이 보이지 않게)
+            setRecords(prev => {
+              const merged = { ...mainRecords };
+              // sharedPeer를 다시 머지
+              Object.entries(sharedPeer).forEach(([date, dR]) => {
+                merged[date] = { ...(merged[date] || {}) };
+                Object.entries(dR || {}).forEach(([cId, tgts]) => {
+                  merged[date][cId] = { ...(merged[date][cId] || {}), ...(tgts || {}) };
+                });
+              });
+              return merged;
+            });
           }
           if (sharedChanges > 0 && srSnap.exists()) {
             await updateDoc(doc(db, "classData", "sharedRecords"), { peer: sharedPeer });
