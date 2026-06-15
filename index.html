@@ -24,7 +24,7 @@
 
   <!-- React 앱 로직 -->
   <script type="text/babel" data-type="module">
-    import React, { useState, useEffect, useRef } from "https://esm.sh/react@18.2.0";
+    import React, { useState, useEffect, useRef, useMemo } from "https://esm.sh/react@18.2.0";
     import { createRoot } from "https://esm.sh/react-dom@18.2.0/client";
     import {
       Users, ClipboardList, CheckSquare, LogOut, ShieldCheck, UserCheck, Download, RefreshCw,
@@ -324,6 +324,22 @@
         return () => unsubscribe();
       }, []);
 
+      // 점수 기록 값에서 역할명 추출 (각 기록 형식 한 곳에서 처리)
+      //   teacher_* checkerId  → "선생님 권한 부여"
+      //   "[v] N_role"          → "role"
+      //   "[-] role"            → "role"
+      //   "[거북이] N"          → "거북이 독서 지킴이"
+      //   "role"                → "role"
+      //   그 외(false 등)       → null
+      const parseRoleName = (val, cId) => {
+        if (cId === "teacher_racing" || cId === "teacher_speaking" || cId === "teacher_listening" || cId === "teacher_communication") return "선생님 권한 부여";
+        if (typeof val !== "string" || val === "false" || val === "") return null;
+        if (val.startsWith("[v] ")) return val.substring(4).split("_").slice(1).join("_") || "(이름없음)";
+        if (val.startsWith("[-] ")) return val.substring(4);
+        if (val.startsWith("[거북이] ")) return "거북이 독서 지킴이";
+        return val;
+      };
+
       const sortByIdDesc = (arr) => {
         const sortKey = (v) => {
           const s = String(v ?? "");
@@ -337,56 +353,29 @@
       const loadedRef = useRef({ suggestions: false, readingReports: false, polls: false, seating: false, announcements: false });
       const [boardLoading, setBoardLoading] = useState({ suggestions: false, readingReports: false, polls: false });
 
-      const loadSuggestions = async () => {
+      // 게시판 컬렉션 로더 팩토리: 동일 구조의 3개(loadSuggestions/loadReadingReports/loadPolls)를
+      // 한 함수로 묶어 정렬·dedup·에러 처리·로딩 상태 관리를 일관되게 처리.
+      const makeBoardLoader = (refKey, collectionName, setter, errorLabel) => async () => {
         if (!db) return;
-        if (loadedRef.current.suggestions === "loading") return; // 중복 호출 방지
-        loadedRef.current.suggestions = "loading";
-        setBoardLoading(prev => ({ ...prev, suggestions: true }));
+        if (loadedRef.current[refKey] === "loading") return; // 중복 호출 방지
+        loadedRef.current[refKey] = "loading";
+        setBoardLoading(prev => ({ ...prev, [refKey]: true }));
         try {
-          const snap = await getDocs(collection(db, "suggestions"));
-          setSuggestions(sortByIdDesc(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))));
-          loadedRef.current.suggestions = true;
+          const snap = await getDocs(collection(db, collectionName));
+          setter(sortByIdDesc(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))));
+          loadedRef.current[refKey] = true;
         } catch (e) {
-          console.error("건의게시판 로드 에러:", e);
-          showToast("건의게시판을 불러올 수 없습니다.");
-          loadedRef.current.suggestions = false; // 실패 시 재시도 가능
+          console.error(errorLabel + " 로드 에러:", e);
+          showToast(errorLabel + "을(를) 불러올 수 없습니다.");
+          loadedRef.current[refKey] = false; // 실패 시 재시도 가능
+        } finally {
+          setBoardLoading(prev => ({ ...prev, [refKey]: false }));
         }
-        finally { setBoardLoading(prev => ({ ...prev, suggestions: false })); }
       };
 
-      const loadReadingReports = async () => {
-        if (!db) return;
-        if (loadedRef.current.readingReports === "loading") return;
-        loadedRef.current.readingReports = "loading";
-        setBoardLoading(prev => ({ ...prev, readingReports: true }));
-        try {
-          const snap = await getDocs(collection(db, "readingReports"));
-          setReadingReports(sortByIdDesc(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))));
-          loadedRef.current.readingReports = true;
-        } catch (e) {
-          console.error("독서감상문 로드 에러:", e);
-          showToast("독서감상문을 불러올 수 없습니다.");
-          loadedRef.current.readingReports = false;
-        }
-        finally { setBoardLoading(prev => ({ ...prev, readingReports: false })); }
-      };
-
-      const loadPolls = async () => {
-        if (!db) return;
-        if (loadedRef.current.polls === "loading") return;
-        loadedRef.current.polls = "loading";
-        setBoardLoading(prev => ({ ...prev, polls: true }));
-        try {
-          const snap = await getDocs(collection(db, "polls"));
-          setPolls(sortByIdDesc(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))));
-          loadedRef.current.polls = true;
-        } catch (e) {
-          console.error("투표 로드 에러:", e);
-          showToast("투표를 불러올 수 없습니다.");
-          loadedRef.current.polls = false;
-        }
-        finally { setBoardLoading(prev => ({ ...prev, polls: false })); }
-      };
+      const loadSuggestions = makeBoardLoader("suggestions", "suggestions", setSuggestions, "건의게시판");
+      const loadReadingReports = makeBoardLoader("readingReports", "readingReports", setReadingReports, "독서감상문");
+      const loadPolls = makeBoardLoader("polls", "polls", setPolls, "투표");
 
       // 공지 배너용: 전체 건의글 대신 공지글만 읽음 (개요 화면 읽기 절감)
       const loadAnnouncements = async () => {
@@ -1305,9 +1294,11 @@
       const diagnoseRoleScores = async () => {
         if (!db) return showToast("로그인 후 사용하세요.");
         try {
-          // 1) mainState만 따로 / sharedRecords만 따로 / merged 비교
-          const msSnap = await getDoc(doc(db, "classData", "mainState"));
-          const srSnap = await getDoc(doc(db, "classData", "sharedRecords"));
+          // 1) mainState와 sharedRecords를 병렬로 받기 (네트워크 왕복 절반으로 단축)
+          const [msSnap, srSnap] = await Promise.all([
+            getDoc(doc(db, "classData", "mainState")),
+            getDoc(doc(db, "classData", "sharedRecords")),
+          ]);
           const mainRecords = (msSnap.data() || {}).records || {};
           const sharedPeerData = (srSnap.exists() ? srSnap.data() : {}).peer || {};
 
@@ -1318,24 +1309,13 @@
           const undefinedRoles = new Set(); // roleSettings에 없는 역할
           let mainCount = 0, sharedCount = 0;
 
-          const extractRole = (val, cId) => {
-            if (cId === "teacher_racing" || cId === "teacher_speaking" || cId === "teacher_listening" || cId === "teacher_communication") return "선생님 권한 부여";
-            if (typeof val === "string" && val !== "false" && val !== "") {
-              if (val.startsWith("[v] ")) return val.substring(4).split("_").slice(1).join("_") || "(이름없음)";
-              if (val.startsWith("[-] ")) return val.substring(4);
-              if (val.startsWith("[거북이] ")) return "거북이 독서 지킴이";
-              return val;
-            }
-            return null;
-          };
-
           Object.entries(mainRecords).forEach(([date, dR]) => {
             if (!dR || typeof dR !== 'object') return;
             Object.entries(dR).forEach(([cId, tgts]) => {
               if (!tgts || typeof tgts !== 'object') return;
               Object.entries(tgts).forEach(([tId, val]) => {
                 const p = getPoints(val);
-                const role = extractRole(val, cId);
+                const role = parseRoleName(val, cId);
                 if (role && p !== 0) {
                   byRoleMain[role] = (byRoleMain[role] || 0) + Math.abs(p);
                   mainCount++;
@@ -1357,7 +1337,7 @@
               if (!tgts || typeof tgts !== 'object') return;
               Object.entries(tgts).forEach(([tId, val]) => {
                 const p = getPoints(val);
-                const role = extractRole(val, cId);
+                const role = parseRoleName(val, cId);
                 if (role && p !== 0) {
                   byRoleShared[role] = (byRoleShared[role] || 0) + Math.abs(p);
                   sharedCount++;
@@ -1400,8 +1380,8 @@
         });
       };
 
-      // 유사한 역할명을 자동 그룹화
-      const computeRoleGroups = () => {
+      // 유사한 역할명을 자동 그룹화 — roleDiag가 바뀔 때만 재계산 (렌더마다 돌지 않도록 메모이제이션)
+      const roleGroups = useMemo(() => {
         if (!roleDiag) return [];
         const allNames = new Set([
           ...Object.keys(roleDiag.byRoleMain || {}),
@@ -1439,7 +1419,7 @@
           result.push({ key: k, variants: withPts, total: withPts.reduce((s, x) => s + x.pts, 0) });
         });
         return result.sort((a, b) => b.total - a.total);
-      };
+      }, [roleDiag]);
 
       // 역할명 변형 통합: 모든 변형을 canonical로 치환 (records 안의 모든 형식 처리)
       const mergeRoleVariants = async (variants, canonical) => {
@@ -1452,11 +1432,14 @@
 
         setMergeInProgress(true);
         try {
-          const msSnap = await getDoc(doc(db, "classData", "mainState"));
-          const srSnap = await getDoc(doc(db, "classData", "sharedRecords"));
+          const [msSnap, srSnap] = await Promise.all([
+            getDoc(doc(db, "classData", "mainState")),
+            getDoc(doc(db, "classData", "sharedRecords")),
+          ]);
           const origRecords = (msSnap.data() || {}).records || {};
-          const mainRecords = JSON.parse(JSON.stringify(origRecords));
-          const sharedPeer = srSnap.exists() ? JSON.parse(JSON.stringify((srSnap.data() || {}).peer || {})) : {};
+          // structuredClone은 JSON.parse(JSON.stringify(...))보다 2~3배 빠르고 GC 부담도 적음
+          const mainRecords = structuredClone(origRecords);
+          const sharedPeer = srSnap.exists() ? structuredClone((srSnap.data() || {}).peer || {}) : {};
 
           // 안전장치: 원본 records가 비어있으면 통합할 게 없음
           const origDateCount = Object.keys(origRecords).length;
@@ -1515,21 +1498,20 @@
           if (mainChanges > 0) {
             await updateDoc(doc(db, "classData", "mainState"), { records: mainRecords });
             invalidateCache();
-            // 로컬 records 상태도 즉시 갱신 (다음 로드 전까지 옛 이름이 보이지 않게)
-            setRecords(prev => {
-              const merged = { ...mainRecords };
-              // sharedPeer를 다시 머지
-              Object.entries(sharedPeer).forEach(([date, dR]) => {
-                merged[date] = { ...(merged[date] || {}) };
-                Object.entries(dR || {}).forEach(([cId, tgts]) => {
-                  merged[date][cId] = { ...(merged[date][cId] || {}), ...(tgts || {}) };
-                });
-              });
-              return merged;
-            });
           }
           if (sharedChanges > 0 && srSnap.exists()) {
             await updateDoc(doc(db, "classData", "sharedRecords"), { peer: sharedPeer });
+          }
+          // 로컬 records 즉시 갱신: mainRecords + sharedPeer 한 번에 머지 (DB 쓰기와 동일한 결과)
+          if (mainChanges > 0 || sharedChanges > 0) {
+            const merged = { ...mainRecords };
+            Object.entries(sharedPeer).forEach(([date, dR]) => {
+              merged[date] = { ...(merged[date] || {}) };
+              Object.entries(dR || {}).forEach(([cId, tgts]) => {
+                merged[date][cId] = { ...(merged[date][cId] || {}), ...(tgts || {}) };
+              });
+            });
+            setRecords(merged);
           }
           // rolePool에서 변형 제거 + canonical 보장
           let newPool = rolePool.filter(r => !toReplace.includes(r));
@@ -3608,15 +3590,14 @@
                           <div className="text-[10px] text-gray-500">총 entry — mainState: {roleDiag.mainCount}, sharedRecords: {roleDiag.sharedCount}</div>
 
                           {/* 역할명 변형 자동 통합 */}
-                          {(() => {
-                            const groups = computeRoleGroups();
-                            if (!groups.length) return <div className="text-[10px] text-gray-400 border-t border-orange-100 pt-2">통합할 유사 역할 그룹이 없습니다.</div>;
-                            return (
+                          {roleGroups.length === 0 ? (
+                            <div className="text-[10px] text-gray-400 border-t border-orange-100 pt-2">통합할 유사 역할 그룹이 없습니다.</div>
+                          ) : (
                               <div className="border-t border-orange-200 pt-3">
-                                <div className="font-black text-orange-800 mb-1">🔧 유사 역할 자동 통합 ({groups.length}개 그룹)</div>
+                                <div className="font-black text-orange-800 mb-1">🔧 유사 역할 자동 통합 ({roleGroups.length}개 그룹)</div>
                                 <div className="text-[10px] text-gray-500 mb-2">같은 역할인데 이름이 여러 개로 나뉜 그룹입니다. 기준 이름을 고르고 통합하면 점수가 합쳐집니다. (점수는 변하지 않고, 이름만 합쳐짐)</div>
                                 <div className="space-y-2 max-h-72 overflow-y-auto">
-                                  {groups.map((g, gi) => {
+                                  {roleGroups.map((g, gi) => {
                                     const chosen = canonicalChoice[g.key] || g.variants[0].name;
                                     return (
                                       <div key={gi} className="bg-orange-50/50 border border-orange-100 rounded-lg p-2">
@@ -3641,8 +3622,7 @@
                                   })}
                                 </div>
                               </div>
-                            );
-                          })()}
+                          )}
                         </div>
                       )}
                     </div>
