@@ -9,7 +9,8 @@
   <script src="https://cdn.tailwindcss.com"></script>
   
   <!-- Babel (브라우저에서 JSX 컴파일) -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Babel 버전 고정: 자동 JSX runtime 도입 이전 안정 버전. 최신 CDN 자동 추적 시 'react/jsx-runtime' resolve 실패로 흰 화면 떴던 사례 방지. -->
+  <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
   <!-- Babel이 자동 JSX runtime을 쓰면 'react/jsx-runtime' bare specifier가 생기는데
        브라우저가 그걸 resolve 못 함 → import map으로 esm.sh URL에 매핑해 해결 -->
   <script type="importmap">
