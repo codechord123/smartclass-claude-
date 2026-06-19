@@ -36,9 +36,10 @@
   <div id="root"></div>
 
   <!-- React 앱 로직 -->
-  <script type="text/babel" data-type="module" data-presets="react,env" data-plugins="">
-    /* Babel CDN이 자동 jsx-runtime 사용을 시도하면서 'react/jsx-runtime' 모듈 resolve 실패 →
-       data-presets로 classic React preset만 명시해 React.createElement 변환을 강제. */
+  <script type="text/babel" data-type="module">
+    /* data-presets는 지정 안 함: Babel 7.23.10의 data-type="module" 기본 동작이
+       import 구문을 그대로 두므로 잘 동작. 'env' preset을 명시하면 import → require로
+       변환되어 'require is not defined' 에러 발생. */
     import React, { useState, useEffect, useRef, useMemo } from "https://esm.sh/react@18.2.0";
     import { createRoot } from "https://esm.sh/react-dom@18.2.0/client";
     import {
