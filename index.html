@@ -10,6 +10,18 @@
   
   <!-- Babel (브라우저에서 JSX 컴파일) -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Babel이 자동 JSX runtime을 쓰면 'react/jsx-runtime' bare specifier가 생기는데
+       브라우저가 그걸 resolve 못 함 → import map으로 esm.sh URL에 매핑해 해결 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.2.0",
+      "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime",
+      "react-dom": "https://esm.sh/react-dom@18.2.0",
+      "react-dom/client": "https://esm.sh/react-dom@18.2.0/client"
+    }
+  }
+  </script>
 
   <style>
     /* 커스텀 스크롤바 */
@@ -23,7 +35,9 @@
   <div id="root"></div>
 
   <!-- React 앱 로직 -->
-  <script type="text/babel" data-type="module">
+  <script type="text/babel" data-type="module" data-presets="react,env" data-plugins="">
+    /* Babel CDN이 자동 jsx-runtime 사용을 시도하면서 'react/jsx-runtime' 모듈 resolve 실패 →
+       data-presets로 classic React preset만 명시해 React.createElement 변환을 강제. */
     import React, { useState, useEffect, useRef, useMemo } from "https://esm.sh/react@18.2.0";
     import { createRoot } from "https://esm.sh/react-dom@18.2.0/client";
     import {
