@@ -1554,6 +1554,96 @@
         setMergeInProgress(false);
       };
 
+      // 🐢 거북이 독서 데이터 백업 — 1학기 데이터를 한 JSON 파일로 내보냄
+      const [backupSummary, setBackupSummary] = useState(null);
+      const exportTurtleBackup = async () => {
+        if (!db) return showToast("로그인 후 사용하세요.");
+        if (authStatus.type !== "teacher") return showToast("선생님으로 로그인 후 사용하세요.");
+        showToast("거북이 데이터 수집 중...");
+        try {
+          // 1) 모든 소스 병렬 fetch
+          const [rrSnap, msSnap, srSnap] = await Promise.all([
+            getDocs(collection(db, "readingReports")),
+            getDoc(doc(db, "classData", "mainState")),
+            getDoc(doc(db, "classData", "sharedRecords")),
+          ]);
+
+          // 2) readingReports 전체
+          const readingReports = rrSnap.docs.map(d => ({ docId: d.id, ...d.data() }));
+
+          // 3) booksRead (두 소스)
+          const msData = msSnap.data() || {};
+          const srData = srSnap.exists() ? srSnap.data() : {};
+          const booksRead = {
+            mainState: msData.booksRead || {},
+            sharedRecords: srData.booksRead || {},
+          };
+
+          // 4) records에서 [거북이] 형식만 추출 (mainState + sharedRecords.peer)
+          const extractTurtle = (records) => {
+            const out = [];
+            Object.entries(records || {}).forEach(([date, dR]) => {
+              if (!dR || typeof dR !== "object") return;
+              Object.entries(dR).forEach(([cId, tgts]) => {
+                if (!tgts || typeof tgts !== "object") return;
+                Object.entries(tgts).forEach(([tId, val]) => {
+                  if (typeof val === "string" && val.startsWith("[거북이] ")) {
+                    out.push({ date, checkerId: cId, targetId: tId, value: val });
+                  }
+                });
+              });
+            });
+            return out;
+          };
+          const turtleMain = extractTurtle(msData.records);
+          const turtlePeer = extractTurtle(srData.peer);
+
+          // 5) 학생 명단(이름 매핑용)
+          const studentList = (msData.students || students || []).map(s => ({ id: s.id, name: s.name }));
+
+          // 6) 백업 객체 구성
+          const backup = {
+            meta: {
+              exportedAt: new Date().toISOString(),
+              exportedAtLocal: new Date().toLocaleString("ko-KR"),
+              projectId: "w-program",
+              version: "1.0",
+              note: "1학기 거북이 독서 전체 백업 (readingReports + booksRead + 거북이 점수 이력)"
+            },
+            students: studentList,
+            readingReports,
+            booksRead,
+            turtleScores: { mainState: turtleMain, sharedRecords: turtlePeer },
+            counts: {
+              readingReports: readingReports.length,
+              readingReportsNonDraft: readingReports.filter(r => !r.isDraft).length,
+              booksReadMainStudents: Object.keys(booksRead.mainState).length,
+              booksReadSharedStudents: Object.keys(booksRead.sharedRecords).length,
+              turtleScoreMain: turtleMain.length,
+              turtleScoreShared: turtlePeer.length,
+            }
+          };
+
+          // 7) 파일 다운로드
+          const json = JSON.stringify(backup, null, 2);
+          const blob = new Blob([json], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          const dateStr = new Date().toISOString().slice(0, 10);
+          a.href = url;
+          a.download = `거북이독서_백업_${dateStr}.json`;
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+
+          setBackupSummary(backup.counts);
+          logAudit("turtle_backup", backup.counts);
+          showToast(`✅ 백업 완료: 감상문 ${backup.counts.readingReports}건`);
+        } catch (e) {
+          console.error("백업 실패:", e);
+          showToast("백업 실패: " + (e.code || e.message));
+        }
+      };
+
       // 책 카운트 재계산: readingReports 컬렉션의 비-임시저장 글 개수를 기준으로
       // 모든 학생의 booksRead를 정확히 다시 설정.
       const recomputeBookCounts = async () => {
@@ -3639,6 +3729,27 @@
                                 </div>
                               </div>
                           )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 🐢 거북이 독서 데이터 백업 */}
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-teal-300">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <h2 className="text-sm font-black text-teal-800 mb-1 flex items-center gap-1.5">🐢 거북이 독서 데이터 백업</h2>
+                          <p className="text-[10px] text-gray-500">감상문 전체 + 책 권수 + 거북이 점수 이력을 JSON 파일로 내려받습니다. (2학기 새 DB 전환 대비 영구 보존용)</p>
+                        </div>
+                        <button type="button" onClick={exportTurtleBackup} className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold py-2 px-4 rounded-lg shadow-sm transition-colors whitespace-nowrap">JSON 백업</button>
+                      </div>
+                      {backupSummary && (
+                        <div className="mt-3 border-t border-teal-100 pt-2 text-[11px] text-gray-700 grid grid-cols-2 md:grid-cols-3 gap-1.5">
+                          <div>📖 감상문: <b className="text-teal-700">{backupSummary.readingReports}</b>건 (정식 {backupSummary.readingReportsNonDraft})</div>
+                          <div>📚 책권수(mainState): <b>{backupSummary.booksReadMainStudents}</b>명</div>
+                          <div>📚 책권수(shared): <b>{backupSummary.booksReadSharedStudents}</b>명</div>
+                          <div>🐢 거북이점수(main): <b>{backupSummary.turtleScoreMain}</b>건</div>
+                          <div>🐢 거북이점수(shared): <b>{backupSummary.turtleScoreShared}</b>건</div>
+                          <div className="text-teal-600 font-bold">✅ 다운로드 완료</div>
                         </div>
                       )}
                     </div>
