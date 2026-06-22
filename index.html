@@ -9,7 +9,20 @@
   <script src="https://cdn.tailwindcss.com"></script>
   
   <!-- Babel (브라우저에서 JSX 컴파일) -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Babel 버전 고정: 자동 JSX runtime 도입 이전 안정 버전. 최신 CDN 자동 추적 시 'react/jsx-runtime' resolve 실패로 흰 화면 떴던 사례 방지. -->
+  <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
+  <!-- Babel이 자동 JSX runtime을 쓰면 'react/jsx-runtime' bare specifier가 생기는데
+       브라우저가 그걸 resolve 못 함 → import map으로 esm.sh URL에 매핑해 해결 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.2.0",
+      "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime",
+      "react-dom": "https://esm.sh/react-dom@18.2.0",
+      "react-dom/client": "https://esm.sh/react-dom@18.2.0/client"
+    }
+  }
+  </script>
 
   <style>
     /* 커스텀 스크롤바 */
@@ -24,7 +37,10 @@
 
   <!-- React 앱 로직 -->
   <script type="text/babel" data-type="module">
-    import React, { useState, useEffect } from "https://esm.sh/react@18.2.0";
+    /* data-presets는 지정 안 함: Babel 7.23.10의 data-type="module" 기본 동작이
+       import 구문을 그대로 두므로 잘 동작. 'env' preset을 명시하면 import → require로
+       변환되어 'require is not defined' 에러 발생. */
+    import React, { useState, useEffect, useRef, useMemo } from "https://esm.sh/react@18.2.0";
     import { createRoot } from "https://esm.sh/react-dom@18.2.0/client";
     import {
       Users, ClipboardList, CheckSquare, LogOut, ShieldCheck, UserCheck, Download, RefreshCw,
@@ -35,8 +51,8 @@
     } from "https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0";
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { initializeFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, getDocs, collection, query, orderBy, limit, startAfter, increment, deleteField, onSnapshot, arrayUnion, arrayRemove, where } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+    import { getAuth, signInAnonymously, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+    import { initializeFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, getDocs, collection, query, orderBy, limit, startAfter, increment, deleteField, onSnapshot, arrayUnion, arrayRemove, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
     // Firebase 설정
     const firebaseConfig = {
@@ -69,6 +85,7 @@
       const [toastMsg, setToastMsg] = useState("");
       const [scoreModalStudent, setScoreModalStudent] = useState(null);
       const [selectedRoleStat, setSelectedRoleStat] = useState(null);
+      const [roleStatsSort, setRoleStatsSort] = useState("points");
 
       const getLocalDateString = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
       const [selectedDate, setSelectedDate] = useState(getLocalDateString(new Date()));
@@ -90,7 +107,8 @@
       const [rolePool, setRolePool] = useState(defaultRoles);
       const [localRolePool, setLocalRolePool] = useState(defaultRoles.join("\n"));
       const realNames = Object.keys(genderMap);
-      const [teacherPassword, setTeacherPassword] = useState("05041106");
+      // (구) teacherPassword는 Firebase Auth로 대체됨. 호환을 위한 더미.
+      const teacherPassword = "";
       const [students, setStudents] = useState(() => Array.from({ length: 25 }, (_, i) => ({ id: i + 1, name: realNames[i] || `학생${i+1}`, role: defaultRoles[i] || "역할 없음", password: "", isLocked: false, gender: genderMap[realNames[i]] || "M" })));
 
       const [records, setRecords] = useState({});
@@ -99,7 +117,6 @@
       
       const [suggestions, setSuggestions] = useState([]);
       const [suggestionLimit, setSuggestionLimit] = useState(10);
-      const [hasMoreSuggestions, setHasMoreSuggestions] = useState(true);
       
       const [suggestionTitle, setSuggestionTitle] = useState("");
       const [suggestionInput, setSuggestionInput] = useState("");
@@ -119,16 +136,27 @@
       const [booksRead, setBooksRead] = useState({});
       const [readingReports, setReadingReports] = useState([]);
       const [reportLimit, setReportLimit] = useState(10);
-      const [hasMoreReports, setHasMoreReports] = useState(true);
 
       const [reportForm, setReportForm] = useState({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" });
       const [isReportAnonymous, setIsReportAnonymous] = useState(false);
+      const [submittingReport, setSubmittingReport] = useState(false);
+      const [showPwChange, setShowPwChange] = useState(false);
+      const [pwOld, setPwOld] = useState("");
+      const [pwNew, setPwNew] = useState("");
+      const [pwNew2, setPwNew2] = useState("");
       const [expandedReportId, setExpandedReportId] = useState(null);
       const [editingReportId, setEditingReportId] = useState(null);
       const [reportCommentInputs, setReportCommentInputs] = useState({});
       
       const [readingSearch, setReadingSearch] = useState("");
       const [suggestionSearch, setSuggestionSearch] = useState("");
+
+      const [announcements, setAnnouncements] = useState([]);
+      const [polls, setPolls] = useState([]);
+      const [pollTitle, setPollTitle] = useState("");
+      const [pollOptions, setPollOptions] = useState(["", ""]);
+      const [pollIsMultiple, setPollIsMultiple] = useState(false);
+      const [pollSelections, setPollSelections] = useState({});
 
       const [seatingTab, setSeatingTab] = useState("classroom");
       const [classroomSeating, setClassroomSeating] = useState(new Array(35).fill(null));
@@ -145,6 +173,7 @@
       const [currentLunchGirls, setCurrentLunchGirls] = useState([]);
       const [lunchDateInput, setLunchDateInput] = useState(`${new Date().getMonth()+1}월 ${new Date().getDate()}일 급식`);
       const [draggedClassroomIdx, setDraggedClassroomIdx] = useState(null);
+      const [draggedSecretIdx, setDraggedSecretIdx] = useState(null);
       const [draggedLunchInfo, setDraggedLunchInfo] = useState(null);
       const [tokenManageStudent, setTokenManageStudent] = useState(null);
       const [manageGoldTokenOpen, setManageGoldTokenOpen] = useState(false);
@@ -193,12 +222,21 @@
       const [loginTab, setLoginTab] = useState("student");
       const [selectedId, setSelectedId] = useState(1);
       const [passwordInput, setPasswordInput] = useState("");
+      const [emailInput, setEmailInput] = useState("");
       const [error, setError] = useState("");
+      // 학생/거북이/책 카운트는 별도 문서(보안 규칙에서 학생 쓰기 허용)
+      const [sharedPeer, setSharedPeer] = useState({}); // {date: {checkerId: {targetId: val}}}
 
       const [teacherTab, setTeacherTab] = useState("overview"); 
       const [studentTab, setStudentTab] = useState("overview"); 
       const [studentReadingSubTab, setStudentReadingSubTab] = useState("write");
       const [scoreBoardDate, setScoreBoardDate] = useState(getLocalDateString(new Date()));
+      const [fixScoreStudent, setFixScoreStudent] = useState("");
+      const [fixScoreDate, setFixScoreDate] = useState(getLocalDateString(new Date(Date.now() - 86400000)));
+      const [fixScoreCategory, setFixScoreCategory] = useState("teacher_racing");
+      const [fixScoreNewValue, setFixScoreNewValue] = useState("");
+      const [auditLogs, setAuditLogs] = useState([]);
+      const [auditLoading, setAuditLoading] = useState(false);
       const [gridConfig, setGridConfig] = useState(new Array(35).fill(1));
       const [isLayoutEditMode, setIsLayoutEditMode] = useState(false);
 
@@ -288,43 +326,130 @@
 
       useEffect(() => {
         if (!auth) { setIsDBLoaded(true); return; }
-        signInAnonymously(auth).catch(() => setIsDBLoaded(true));
+        // 페이지 로드 시 항상 익명으로 시작. 직전 세션이 선생님(이메일)로 남아있으면 로그아웃 후 익명.
+        const init = async () => {
+          try {
+            if (auth.currentUser && auth.currentUser.email) {
+              await signOut(auth);
+            }
+            await signInAnonymously(auth);
+          } catch (e) { setIsDBLoaded(true); }
+        };
+        init();
         const unsubscribe = onAuthStateChanged(auth, (user) => { setDbUser(user); if (!user) setIsDBLoaded(true); });
         return () => unsubscribe();
       }, []);
 
-      useEffect(() => {
-        if (!dbUser || !db) return;
-        const qSug = query(collection(db, "suggestions"), orderBy("id", "desc"), limit(suggestionLimit));
-        const unsubSug = onSnapshot(qSug, (snap) => {
-          setSuggestions(snap.docs.map(d => d.data()));
-          setHasMoreSuggestions(snap.docs.length === suggestionLimit);
-        });
-        return () => unsubSug();
-      }, [dbUser, suggestionLimit]);
+      // 점수 기록 값에서 역할명 추출 (각 기록 형식 한 곳에서 처리)
+      //   teacher_* checkerId  → "선생님 권한 부여"
+      //   "[v] N_role"          → "role"
+      //   "[-] role"            → "role"
+      //   "[거북이] N"          → "거북이 독서 지킴이"
+      //   "role"                → "role"
+      //   그 외(false 등)       → null
+      const parseRoleName = (val, cId) => {
+        if (cId === "teacher_racing" || cId === "teacher_speaking" || cId === "teacher_listening" || cId === "teacher_communication") return "선생님 권한 부여";
+        if (typeof val !== "string" || val === "false" || val === "") return null;
+        if (val.startsWith("[v] ")) return val.substring(4).split("_").slice(1).join("_") || "(이름없음)";
+        if (val.startsWith("[-] ")) return val.substring(4);
+        if (val.startsWith("[거북이] ")) return "거북이 독서 지킴이";
+        return val;
+      };
 
-      useEffect(() => {
-        if (!dbUser || !db) return;
-        const qRep = query(collection(db, "readingReports"), orderBy("id", "desc"), limit(reportLimit));
-        const unsubRep = onSnapshot(qRep, (snap) => {
-          setReadingReports(snap.docs.map(d => d.data()));
-          setHasMoreReports(snap.docs.length === reportLimit);
-        });
-        return () => unsubRep();
-      }, [dbUser, reportLimit]);
+      const sortByIdDesc = (arr) => {
+        const sortKey = (v) => {
+          const s = String(v ?? "");
+          const n = parseInt(s, 10);
+          return Number.isFinite(n) ? n : 0;
+        };
+        return arr.slice().sort((a, b) => sortKey(b.id) - sortKey(a.id));
+      };
 
-      // 화면 및 탭이 바뀔 때 코인 요청을 핀포인트로 가져오기
+      // 읽기 횟수 절약: 실시간 리스너 대신 탭 진입/새로고침/본인 쓰기 시에만 1회씩 로드
+      const loadedRef = useRef({ suggestions: false, readingReports: false, polls: false, seating: false, announcements: false });
+      const [boardLoading, setBoardLoading] = useState({ suggestions: false, readingReports: false, polls: false });
+
+      // 게시판 컬렉션 로더 팩토리: 동일 구조의 3개(loadSuggestions/loadReadingReports/loadPolls)를
+      // 한 함수로 묶어 정렬·dedup·에러 처리·로딩 상태 관리를 일관되게 처리.
+      const makeBoardLoader = (refKey, collectionName, setter, errorLabel) => async () => {
+        if (!db) return;
+        if (loadedRef.current[refKey] === "loading") return; // 중복 호출 방지
+        loadedRef.current[refKey] = "loading";
+        setBoardLoading(prev => ({ ...prev, [refKey]: true }));
+        try {
+          const snap = await getDocs(collection(db, collectionName));
+          setter(sortByIdDesc(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))));
+          loadedRef.current[refKey] = true;
+        } catch (e) {
+          console.error(errorLabel + " 로드 에러:", e);
+          showToast(errorLabel + "을(를) 불러올 수 없습니다.");
+          loadedRef.current[refKey] = false; // 실패 시 재시도 가능
+        } finally {
+          setBoardLoading(prev => ({ ...prev, [refKey]: false }));
+        }
+      };
+
+      const loadSuggestions = makeBoardLoader("suggestions", "suggestions", setSuggestions, "건의게시판");
+      const loadReadingReports = makeBoardLoader("readingReports", "readingReports", setReadingReports, "독서감상문");
+      const loadPolls = makeBoardLoader("polls", "polls", setPolls, "투표");
+
+      // 공지 배너용: 전체 건의글 대신 공지글만 읽음 (개요 화면 읽기 절감)
+      const loadAnnouncements = async () => {
+        if (!db) return;
+        try {
+          const snap = await getDocs(query(collection(db, "suggestions"), where("isAnnouncement", "==", true)));
+          setAnnouncements(sortByIdDesc(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))));
+          loadedRef.current.announcements = true;
+        } catch (e) { console.error("공지 로드 에러:", e); }
+      };
+
+      // 화면 및 탭이 바뀔 때 필요한 데이터만 1회 로드 (이미 로드했으면 생략, 새로고침 버튼으로 갱신)
       useEffect(() => {
         if (!dbUser || !db) return;
-        if (authStatus.type === "teacher" && teacherTab === "coin_manage") {
-          loadTeacherCoinRequests(coinManageDate);
-        } else if (authStatus.type === "student" && studentTab === "shop") {
-          loadStudentCoinRequests(authStatus.user.id);
+        if (authStatus.type === "teacher") {
+          if (teacherTab === "coin_manage") loadTeacherCoinRequests(coinManageDate);
+          else if (teacherTab === "suggestions" && !loadedRef.current.suggestions) loadSuggestions();
+          else if (teacherTab === "reading_reports" && !loadedRef.current.readingReports) loadReadingReports();
+          else if (teacherTab === "polls" && !loadedRef.current.polls) loadPolls();
+          else if (teacherTab === "main_seating" && !loadedRef.current.seating) { loadSavedSeating(); loadLunchHistory(); loadedRef.current.seating = true; }
+        } else if (authStatus.type === "student") {
+          if (studentTab === "shop") loadStudentCoinRequests(authStatus.user.id);
+          else if (studentTab === "overview" && !loadedRef.current.announcements) loadAnnouncements();
+          else if (studentTab === "suggestions" && !loadedRef.current.suggestions) loadSuggestions();
+          else if (studentTab === "reading" && !loadedRef.current.readingReports) loadReadingReports();
+          else if (studentTab === "polls" && !loadedRef.current.polls) loadPolls();
         }
       }, [dbUser, authStatus, teacherTab, studentTab, coinManageDate]);
 
+      // 펼쳐서 토론 중인 글 1개만 실시간 구독 (전체 재조회 없이 댓글만 실시간 갱신)
+      useEffect(() => {
+        if (!dbUser || !db || !selectedSuggestionId) return;
+        const ref = doc(db, "suggestions", String(selectedSuggestionId));
+        const unsub = onSnapshot(ref, (snap) => {
+          if (!snap.exists()) return;
+          const data = { ...snap.data(), id: snap.data().id ?? snap.id };
+          setSuggestions(prev => prev.some(s => String(s.id) === String(data.id))
+            ? prev.map(s => String(s.id) === String(data.id) ? data : s)
+            : sortByIdDesc([data, ...prev]));
+        }, (err) => console.error("건의글 실시간 구독 에러:", err));
+        return () => unsub();
+      }, [dbUser, selectedSuggestionId]);
+
+      useEffect(() => {
+        if (!dbUser || !db || !expandedReportId) return;
+        const ref = doc(db, "readingReports", String(expandedReportId));
+        const unsub = onSnapshot(ref, (snap) => {
+          if (!snap.exists()) return;
+          const data = { ...snap.data(), id: snap.data().id ?? snap.id };
+          setReadingReports(prev => prev.some(r => String(r.id) === String(data.id))
+            ? prev.map(r => String(r.id) === String(data.id) ? data : r)
+            : sortByIdDesc([data, ...prev]));
+        }, (err) => console.error("독서감상문 실시간 구독 에러:", err));
+        return () => unsub();
+      }, [dbUser, expandedReportId]);
+
       const applyMainState = (data) => {
-        if (data.teacherPassword !== undefined) setTeacherPassword(String(data.teacherPassword));
+        // teacherPassword는 더 이상 사용하지 않음 (Firebase Auth로 이전)
         if (data.students && Array.isArray(data.students) && data.students.length > 0) {
           const mergedStudents = data.students.map((s) => ({ ...s, isLocked: s.isLocked || false, gender: genderMap[s.name] || s.gender || "M" }));
           setStudents(mergedStudents); 
@@ -400,12 +525,76 @@
                 invalidateCache();
               }
               
-              applyMainState(data);
+              // 학생 또래평가/거북이/책카운트 별도 문서 로드 — mainState 적용 전에 미리 받아둠
+              let sharedData = null;
+              try {
+                const sharedSnap = await getDoc(doc(db, "classData", "sharedRecords"));
+                if (sharedSnap.exists()) sharedData = sharedSnap.data();
+              } catch (e) { console.error("sharedRecords 로드 에러:", e); }
+
+              // 두 소스를 머지해서 데이터 완성 후 한 번에 적용 (레이스 컨디션 방지)
+              const mergedData = { ...data };
+              if (sharedData) {
+                const peer = sharedData.peer || {};
+                setSharedPeer(peer);
+                // records에 peer 데이터 병합
+                const mergedRecords = { ...(data.records || {}) };
+                Object.entries(peer).forEach(([date, dR]) => {
+                  mergedRecords[date] = { ...(mergedRecords[date] || {}) };
+                  Object.entries(dR || {}).forEach(([cId, tgts]) => {
+                    mergedRecords[date][cId] = { ...(mergedRecords[date][cId] || {}), ...(tgts || {}) };
+                  });
+                });
+                mergedData.records = mergedRecords;
+                // booksRead: mainState값에 sharedRecords 증감 합산
+                if (sharedData.booksRead) {
+                  const mergedBooks = { ...(data.booksRead || {}) };
+                  Object.entries(sharedData.booksRead).forEach(([sid, delta]) => {
+                    mergedBooks[sid] = Math.max(0, (mergedBooks[sid] || 0) + (Number(delta) || 0));
+                  });
+                  mergedData.booksRead = mergedBooks;
+                }
+              }
+              applyMainState(mergedData);
+
+              // 자동 복구: mainState.booksRead가 비었는데 readingReports에 정식 글이 있으면 알림
+              try {
+                const mainHasBooks = Object.values(mergedData.booksRead || {}).some(v => v > 0);
+                if (!mainHasBooks && authStatus.type === "teacher") {
+                  const rrSnap = await getDocs(collection(db, "readingReports"));
+                  const nonDraft = rrSnap.docs.filter(d => d.data() && !d.data().isDraft).length;
+                  if (nonDraft > 0) {
+                    showToast(`⚠️ 책 카운트가 비어있는데 감상문은 ${nonDraft}건 있습니다. 설정 → 책 카운트 재계산을 실행하세요.`);
+                  }
+                }
+              } catch(e) { console.warn("자동 복구 진단 실패:", e); }
+
+              // 함정 강화: 세션당 1회 records 학생별 합계 스냅샷 기록.
+              // 외부(F12/스크립트) 쓰기로 점수가 바뀌면 다음 스냅샷과 비교해 추적 가능.
+              try {
+                if (!sessionStorage.getItem('snapTaken')) {
+                  sessionStorage.setItem('snapTaken', '1');
+                const totals = {};
+                Object.values(data.records || {}).forEach(dR => {
+                  if (!dR || typeof dR !== "object") return;
+                  Object.values(dR).forEach(t => {
+                    if (!t || typeof t !== "object") return;
+                    Object.entries(t).forEach(([sid, val]) => {
+                      let p = 0;
+                      if (typeof val === "number") p = val;
+                      else if (typeof val === "string" && val.startsWith("[v] ")) p = parseInt(val.substring(4).split("_")[0], 10) || 0;
+                      else if (typeof val === "string" && val.startsWith("[거북이] ")) p = parseInt(val.replace("[거북이] ", ""), 10) || 0;
+                      else if (typeof val === "string" && val.startsWith("[-] ")) p = -1;
+                      if (p !== 0) totals[sid] = (totals[sid] || 0) + p;
+                    });
+                  });
+                });
+                logAudit("snapshot", { totals, booksRead: data.booksRead || {} });
+                }
+              } catch (e) {}
             }
           } catch (error) { console.error(error); }
-          
-          loadSavedSeating(); 
-          loadLunchHistory();
+
           setIsDBLoaded(true);
         };
 
@@ -421,13 +610,51 @@
 
       const saveToDB = async (updateObj) => {
         if (!dbUser || !db) return;
-        try { 
-            await setDoc(doc(db, "classData", "mainState"), updateObj, { merge: true }); 
-            invalidateCache(); 
+        try {
+            await setDoc(doc(db, "classData", "mainState"), updateObj, { merge: true });
+            invalidateCache();
+            logAudit("mainState_write", { keys: Object.keys(updateObj || {}), by: authStatus.type, byId: authStatus.user?.id });
         } catch (e) { showToast("데이터베이스 저장 실패"); }
       };
 
       const showToast = (msg) => { setToastMsg(msg); setTimeout(() => setToastMsg(""), 3000); };
+
+      // 비밀번호 SHA-256 해시 (학생 본인 비밀번호 저장용)
+      const hashPassword = async (pw) => {
+        const enc = new TextEncoder().encode(String(pw || ""));
+        const buf = await crypto.subtle.digest("SHA-256", enc);
+        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+      };
+
+      const loadAuditLogs = async () => {
+        if (!db) return;
+        setAuditLoading(true);
+        try {
+          // orderBy 제거: 일부 옛 문서가 tsClient를 갖고 있지 않을 수 있으므로 전체를 받아 클라이언트에서 정렬
+          const snap = await getDocs(collection(db, "_sessions"));
+          const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          all.sort((a, b) => (b.tsClient || 0) - (a.tsClient || 0));
+          setAuditLogs(all.slice(0, 500));
+        } catch(e) { console.error("로그 조회 에러:", e); showToast("활동 로그 조회 실패: " + (e.code || e.message)); }
+        setAuditLoading(false);
+      };
+
+      // 활동 로그(함정) — 학생 화면에는 어떤 변화도 없음. 무엇이 누구에 의해 일어났는지 조용히 기록.
+      const logAudit = (action, details) => {
+        try {
+          if (!db || !dbUser) return;
+          setDoc(doc(collection(db, "_sessions")), {
+            action: String(action),
+            details: details || {},
+            uid: dbUser.uid || "",
+            ts: serverTimestamp(),
+            tsClient: Date.now(),
+            ua: (typeof navigator !== "undefined" && navigator.userAgent) ? navigator.userAgent.substring(0, 200) : "",
+            lang: (typeof navigator !== "undefined" && navigator.language) ? navigator.language : "",
+            tz: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch(e) { return ""; } })()
+          }).catch(()=>{});
+        } catch(e) {}
+      };
 
       // =========================================================
       // 3. 비즈니스 논리 및 헬퍼 함수
@@ -479,15 +706,26 @@
       const getTotalBooksRead = () => Object.values(booksRead || {}).reduce((acc, curr) => acc + curr, 0);
 
       const adjustTeacherReading = async (studentId, delta) => {
-        setBooksRead(prev => ({ ...prev, [studentId]: Math.max(0, (prev[studentId] || 0) + delta) })); 
+        if (!dbUser) { showToast("⚠️ 인증 안된 상태입니다. 새로고침 후 다시 시도하세요."); return; }
+        const newLocalVal = Math.max(0, ((booksRead || {})[studentId] || 0) + delta);
+        setBooksRead(prev => ({ ...prev, [studentId]: Math.max(0, (prev[studentId] || 0) + delta) }));
+        // 선생님은 mainState.booksRead에, 학생(거북이 독서 지킴이 등)은 sharedRecords.booksRead에 기록
+        const targetDocName = (authStatus.type === "teacher") ? "mainState" : "sharedRecords";
         try {
-            await updateDoc(doc(db, "classData", "mainState"), {
+            await updateDoc(doc(db, "classData", targetDocName), {
                 [`booksRead.${studentId}`]: increment(delta)
             });
-            invalidateCache();
+            if (targetDocName === "mainState") invalidateCache();
         } catch (e) {
-            await setDoc(doc(db, "classData", "mainState"), { booksRead: { [studentId]: Math.max(0, delta) } }, { merge: true });
-            invalidateCache();
+            // 폴백: 누적 결과값으로 저장 (절대 delta가 아님)
+            try {
+              await setDoc(doc(db, "classData", targetDocName), { booksRead: { [studentId]: newLocalVal } }, { merge: true });
+              if (targetDocName === "mainState") invalidateCache();
+            } catch(e2) {
+              console.error("책 카운트 갱신 실패:", e2);
+              showToast("⚠️ 책 카운트 갱신 실패: " + (e2.code || e2.message));
+              return;
+            }
         }
         showToast(`독서 마라톤 ${delta>0?'+1권 처리됨':'-1권 차감됨'}`);
       };
@@ -684,6 +922,30 @@
         setIsSecretModalOpen(false); showToast("🤫 몰래 자리가 저장되었습니다. Ctrl + 자리 뽑기로 불러올 수 있습니다.");
       };
 
+      const generateSecretSeating = () => {
+        let maleIndices = [], femaleIndices = [], anyIndices = [];
+        for (let i = 0; i < 35; i++) {
+          if (gridConfig[i] === 2) maleIndices.push(i);
+          else if (gridConfig[i] === 3) femaleIndices.push(i);
+          else if (gridConfig[i] === 1) anyIndices.push(i);
+        }
+        let boys = robustShuffle(students.filter(s => s.gender === "M"));
+        let girls = robustShuffle(students.filter(s => s.gender === "F"));
+        let newSeats = new Array(35).fill(null);
+        maleIndices.forEach(idx => { if (boys.length > 0) newSeats[idx] = boys.shift(); });
+        femaleIndices.forEach(idx => { if (girls.length > 0) newSeats[idx] = girls.shift(); });
+        let isBoyTurn = true;
+        anyIndices.forEach(idx => {
+          let nextStudent = null;
+          if (isBoyTurn && boys.length > 0) nextStudent = boys.shift();
+          else if (!isBoyTurn && girls.length > 0) nextStudent = girls.shift();
+          else if (boys.length > 0) nextStudent = boys.shift();
+          else if (girls.length > 0) nextStudent = girls.shift();
+          newSeats[idx] = nextStudent || null; isBoyTurn = !isBoyTurn;
+        });
+        setTempSecretSeating(newSeats); showToast("🎲 무작위로 채웠습니다. 드래그로 조정하세요.");
+      };
+
       const getDerangedShuffle = (arr, prevArr) => {
         let shuffled = [...arr], maxAttempts = 200; 
         while (maxAttempts > 0) {
@@ -729,13 +991,15 @@
       };
 
       const submitReadingReport = async (saveAsDraft = false) => {
+        if (submittingReport) return; // 중복 클릭 차단
         const { title, author, publisher, scene, quote, summary, thoughts } = reportForm;
-        if (saveAsDraft) { if (!title.trim()) return showToast("임시저장을 위해 '책 제목'은 최소한 입력해주세요."); } 
+        if (saveAsDraft) { if (!title.trim()) return showToast("임시저장을 위해 '책 제목'은 최소한 입력해주세요."); }
         else {
           if (!title.trim() || !author.trim() || !publisher.trim()) return showToast("제목, 지은이, 출판사를 모두 입력해주세요.");
           const totalLength = (scene||"").length + (quote||"").length + (summary||"").length + (thoughts||"").length;
           if (totalLength < readingCharLimit) return showToast(`본문은 ${readingCharLimit}자 이상이어야 정식 제출이 가능합니다. (현재 ${totalLength}자) 🐢`);
         }
+        setSubmittingReport(true);
 
         const s = students.find(x => x.id === authStatus.user.id);
         const reportIdToSave = editingReportId || (Date.now() + "_" + Math.random().toString(36).substring(2, 9));
@@ -744,20 +1008,41 @@
         const existingReport = editingReportId ? readingReports.find(r => r.id === editingReportId) : null;
         if(existingReport) nR.comments = existingReport.comments || [];
 
-        if (editingReportId) await updateDoc(doc(db, "readingReports", String(editingReportId)), nR);
-        else await setDoc(doc(db, "readingReports", String(nR.id)), nR);
+        try {
+          // 감상문 본문 저장 (실패 시 토스트로 알림)
+          try {
+            if (editingReportId) await updateDoc(doc(db, "readingReports", String(editingReportId)), nR);
+            else await setDoc(doc(db, "readingReports", String(nR.id)), nR);
+          } catch (e) {
+            console.error("감상문 저장 실패:", e);
+            showToast("감상문 저장 실패: " + (e.code || e.message || "알 수 없는 오류"));
+            return;
+          }
 
-        if (!saveAsDraft && (!existingReport || existingReport.isDraft)) {
-            setBooksRead(prev => ({ ...prev, [s.id]: (prev[s.id] || 0) + 1 }));
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`booksRead.${s.id}`]: increment(1) }); invalidateCache(); } 
-            catch(e) { await setDoc(doc(db, "classData", "mainState"), { booksRead: { [s.id]: 1 } }, { merge: true }); invalidateCache(); }
-        }
+          if (!saveAsDraft && (!existingReport || existingReport.isDraft)) {
+              setBooksRead(prev => ({ ...prev, [s.id]: (prev[s.id] || 0) + 1 }));
+              // 학생 쓰기 가능 위치: sharedRecords.booksRead (실패해도 본문은 저장되므로 진행)
+              try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`booksRead.${s.id}`]: increment(1) }); }
+              catch(e) {
+                // 폴백: 현재 표시값+1을 기록 (sharedRecords가 아예 없을 때만 실행됨)
+                const fallbackVal = ((booksRead || {})[s.id] || 0) + 1;
+                try { await setDoc(doc(db, "classData", "sharedRecords"), { booksRead: { [s.id]: fallbackVal } }, { merge: true }); }
+                catch(e2) {
+                  console.error("책 카운트 갱신 실패:", e2);
+                  showToast("⚠️ 책 카운트 갱신 실패: " + (e2.code || e2.message) + " — 감상문은 저장됨");
+                }
+              }
+          }
 
-        if (saveAsDraft) { setEditingReportId(reportIdToSave); showToast("임시저장되었습니다. 화면에서 이어서 작성하세요! 💾"); } 
-        else {
-            setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setEditingReportId(null); setIsReportAnonymous(false);
-            showToast(editingReportId ? "감상문이 정식 수정 및 등록되었습니다! 🐢" : "감상문이 등록되고 1권이 누적되었습니다! 🐢");
-            if (authStatus.type === "student") setStudentReadingSubTab("board");
+          setReadingReports(prev => sortByIdDesc([nR, ...prev.filter(r => String(r.id) !== String(nR.id))]));
+          if (saveAsDraft) { setEditingReportId(reportIdToSave); showToast("임시저장되었습니다. 화면에서 이어서 작성하세요! 💾"); }
+          else {
+              setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setEditingReportId(null); setIsReportAnonymous(false);
+              showToast(editingReportId ? "감상문이 정식 수정 및 등록되었습니다! 🐢" : "감상문이 등록되고 1권이 누적되었습니다! 🐢");
+              if (authStatus.type === "student") setStudentReadingSubTab("board");
+          }
+        } finally {
+          setSubmittingReport(false);
         }
       };
 
@@ -776,11 +1061,13 @@
         setConfirmModal({ title: "독서 감상문 삭제", message: isDraft ? "임시저장된 감상문을 삭제하시겠습니까?" : "정식 등록된 감상문을 삭제하시겠습니까?\n(⚠️ 삭제 시 누적된 독서 마라톤 1권도 함께 차감됩니다)",
           onConfirm: async () => {
             setEditingReportId(prevId => { if (String(prevId) === targetIdStr) { setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setIsReportAnonymous(false); return null; } return prevId; });
+            setReadingReports(prev => prev.filter(r => String(r.id) !== targetIdStr));
             await deleteDoc(doc(db, "readingReports", targetIdStr));
             if (!isDraft) {
                 setBooksRead(prev => ({ ...prev, [authorId]: Math.max(0, (prev[authorId] || 0) - 1) }));
-                await updateDoc(doc(db, "classData", "mainState"), { [`booksRead.${authorId}`]: increment(-1) }).catch(()=>{});
-                invalidateCache();
+                // 학생 쓰기 가능 위치: sharedRecords.booksRead
+                try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`booksRead.${authorId}`]: increment(-1) }); }
+                catch(e) { console.error("책 카운트 차감 실패:", e); showToast("⚠️ 책 카운트 차감 실패: " + (e.code || e.message)); }
             }
             setConfirmModal(null); showToast(!isDraft ? "삭제 및 1권 차감이 완료되었습니다." : "삭제되었습니다.");
           },
@@ -792,8 +1079,9 @@
         let authorName = "선생님", authorId = "teacher";
         if (authStatus.type === "student") { const myInfo = students.find((s) => s.id === authStatus.user.id); authorName = myInfo.name; authorId = myInfo.id; }
         const newComment = { id: Date.now(), studentId: authorId, studentName: authorName, text, date: new Date().toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) };
-        
+
         setReportCommentInputs({ ...reportCommentInputs, [reportId]: "" });
+        setReadingReports(prev => prev.map(r => String(r.id) === String(reportId) ? { ...r, comments: [...(r.comments || []), newComment] } : r));
         await updateDoc(doc(db, "readingReports", String(reportId)), { comments: arrayUnion(newComment) });
       };
 
@@ -804,11 +1092,72 @@
             const targetReport = readingReports.find(r => String(r.id) === targetReportIdStr); if(!targetReport) return;
             const commentsToRemove = (targetReport.comments || []).filter(c => String(c.id) === targetCommentIdStr);
             if (commentsToRemove.length > 0) {
+               setReadingReports(prev => prev.map(r => String(r.id) === targetReportIdStr ? { ...r, comments: (r.comments || []).filter(c => !commentsToRemove.includes(c)) } : r));
                await updateDoc(doc(db, "readingReports", targetReportIdStr), { comments: arrayRemove(...commentsToRemove) });
             }
             setConfirmModal(null); showToast("삭제되었습니다.");
           }
         });
+      };
+
+      const createPoll = async () => {
+        if (!pollTitle.trim()) return showToast("투표 제목을 입력해주세요.");
+        const cleanOptions = pollOptions.map(o => o.trim()).filter(o => o);
+        if (cleanOptions.length < 2) return showToast("선택지를 2개 이상 입력해주세요.");
+        const newPollId = Date.now() + "_" + Math.random().toString(36).substring(2, 9);
+        const newPoll = {
+          id: newPollId,
+          title: pollTitle.trim(),
+          options: cleanOptions.map((text, i) => ({ id: i, text })),
+          isMultiple: pollIsMultiple,
+          status: "open",
+          votes: {},
+          date: new Date().toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+        };
+        setPollTitle(""); setPollOptions(["", ""]); setPollIsMultiple(false);
+        showToast("투표가 등록되었습니다. 📊");
+        setPolls(prev => sortByIdDesc([newPoll, ...prev]));
+        await setDoc(doc(db, "polls", String(newPoll.id)), newPoll);
+      };
+
+      const submitVote = async (poll) => {
+        const myInfo = students.find((s) => s.id === authStatus.user.id); if (!myInfo) return;
+        const selected = pollSelections[poll.id];
+        const chosen = poll.isMultiple ? (selected || []) : (selected !== undefined && selected !== null ? [selected] : []);
+        if (chosen.length === 0) return showToast("선택지를 골라주세요.");
+        setPolls(prev => prev.map(p => String(p.id) === String(poll.id) ? { ...p, votes: { ...(p.votes || {}), [myInfo.id]: chosen } } : p));
+        await updateDoc(doc(db, "polls", String(poll.id)), { [`votes.${myInfo.id}`]: chosen });
+        showToast("투표가 완료되었습니다! ✅");
+      };
+
+      const togglePollStatus = (poll) => {
+        const closing = poll.status === "open";
+        setConfirmModal({
+          title: closing ? "투표 마감" : "투표 재개",
+          message: closing ? "투표를 마감하시겠습니까?\n마감하면 학생에게 결과가 공개됩니다." : "투표를 다시 열겠습니까?",
+          onConfirm: async () => {
+            setPolls(prev => prev.map(p => String(p.id) === String(poll.id) ? { ...p, status: closing ? "closed" : "open" } : p));
+            await updateDoc(doc(db, "polls", String(poll.id)), { status: closing ? "closed" : "open" });
+            setConfirmModal(null); showToast(closing ? "투표가 마감되었습니다." : "투표가 재개되었습니다.");
+          }
+        });
+      };
+
+      const deletePoll = (id) => {
+        const targetIdStr = String(id);
+        setConfirmModal({ title: "투표 삭제", message: "이 투표를 완전히 삭제하시겠습니까?",
+          onConfirm: async () => { setPolls(prev => prev.filter(p => String(p.id) !== targetIdStr)); await deleteDoc(doc(db, "polls", targetIdStr)); setConfirmModal(null); showToast("삭제되었습니다."); }
+        });
+      };
+
+      const getPollTally = (poll) => {
+        const tally = {}; (poll.options || []).forEach(o => tally[o.id] = 0);
+        let voterCount = 0;
+        Object.values(poll.votes || {}).forEach(choices => {
+          voterCount++;
+          (choices || []).forEach(cId => { if (tally[cId] !== undefined) tally[cId]++; });
+        });
+        return { tally, voterCount };
       };
 
       const submitSuggestion = async () => {
@@ -822,16 +1171,18 @@
         
         setSuggestionTitle(""); setSuggestionInput(""); setIsAnonymous(false); setIsAnnouncement(false);
         showToast(isAnnounce ? "공지사항이 등록되었습니다." : (anon ? "비공개 의견이 전달되었습니다." : "의견이 등록되었습니다."));
+        setSuggestions(prev => sortByIdDesc([newSug, ...prev]));
         await setDoc(doc(db, "suggestions", String(newSug.id)), newSug);
       };
 
       const deleteSuggestion = (id) => {
         const targetIdStr = String(id);
-        setConfirmModal({ title: "게시글 삭제", message: "이 글을 완전히 삭제하시겠습니까?", 
-            onConfirm: async () => { 
-                await deleteDoc(doc(db, "suggestions", targetIdStr)); setConfirmModal(null); showToast("삭제되었습니다."); 
+        setConfirmModal({ title: "게시글 삭제", message: "이 글을 완전히 삭제하시겠습니까?",
+            onConfirm: async () => {
+                setSuggestions(prev => prev.filter(s => String(s.id) !== targetIdStr));
+                await deleteDoc(doc(db, "suggestions", targetIdStr)); setConfirmModal(null); showToast("삭제되었습니다.");
                 if(selectedSuggestionId === id) setSelectedSuggestionId(null);
-            } 
+            }
         });
       };
 
@@ -841,6 +1192,7 @@
           title: "공지사항 상태 변경",
           message: currentStatus ? "이 게시글을 공지에서 내리시겠습니까?\n(일반 게시글로 전환되어 게시판 목록에 표시됩니다.)" : "이 게시글을 공지사항으로 등록하시겠습니까?\n(공지사항 영역에 강조 표시됩니다.)",
           onConfirm: async () => {
+            setSuggestions(prev => prev.map(s => String(s.id) === String(id) ? { ...s, isAnnouncement: !currentStatus } : s));
             await updateDoc(doc(db, "suggestions", String(id)), { isAnnouncement: !currentStatus });
             setConfirmModal(null);
             showToast(currentStatus ? "일반 게시글로 전환되었습니다." : "공지사항으로 등록되었습니다.");
@@ -853,8 +1205,9 @@
         let authorName = "선생님", authorId = "teacher";
         if (authStatus.type === "student") { const myInfo = students.find((s) => s.id === authStatus.user.id); authorName = myInfo.name; authorId = myInfo.id; }
         const newComment = { id: Date.now(), studentId: authorId, studentName: authorName, text, date: new Date().toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }), replyTo: replyingTo?.sugId === sugId ? replyingTo.commentId : null };
-        
+
         setCommentInputs({ ...commentInputs, [sugId]: "" }); setReplyingTo(null);
+        setSuggestions(prev => prev.map(s => String(s.id) === String(sugId) ? { ...s, comments: [...(s.comments || []), newComment] } : s));
         await updateDoc(doc(db, "suggestions", String(sugId)), { comments: arrayUnion(newComment) });
       };
 
@@ -865,6 +1218,7 @@
             const targetSug = suggestions.find(s => String(s.id) === targetSugIdStr); if(!targetSug) return;
             const commentsToRemove = (targetSug.comments || []).filter(c => String(c.id) === targetCommentIdStr || String(c.replyTo) === targetCommentIdStr);
             if (commentsToRemove.length > 0) {
+               setSuggestions(prev => prev.map(s => String(s.id) === targetSugIdStr ? { ...s, comments: (s.comments || []).filter(c => !commentsToRemove.includes(c)) } : s));
                await updateDoc(doc(db, "suggestions", targetSugIdStr), { comments: arrayRemove(...commentsToRemove) });
             }
             if (replyingTo?.commentId === commentId) setReplyingTo(null); setConfirmModal(null); showToast("삭제되었습니다.");
@@ -874,42 +1228,539 @@
 
       const adjustTeacherScore = async (studentId, delta, overrideDate = null, category = "teacher_racing") => {
         const date = overrideDate || selectedDate || getLocalDateString(new Date());
-        const checkerId = category; 
-        const currentVal = (records||{})[date]?.[checkerId]?.[studentId] || 0; 
-        const newVal = currentVal + delta;
-        
-        setRecords((prev) => { const safePrev = prev||{}; const dayData = safePrev[date] || {}; const checkerData = dayData[checkerId] || {}; return { ...safePrev, [date]: { ...dayData, [checkerId]: { ...checkerData, [studentId]: newVal } } }; });
-        
+        const checkerId = category;
+
+        // 서버의 increment(delta)와 동일하게 prev 기반으로 누적시켜야
+        // 빠르게 연속 클릭해도 로컬과 서버 값이 어긋나지 않음
+        setRecords((prev) => {
+          const safePrev = prev || {};
+          const dayData = safePrev[date] || {};
+          const checkerData = dayData[checkerId] || {};
+          const curVal = Number(checkerData[studentId]) || 0;
+          return { ...safePrev, [date]: { ...dayData, [checkerId]: { ...checkerData, [studentId]: curVal + delta } } };
+        });
+
+        if (!dbUser) { showToast("⚠️ 인증 안된 상태입니다. 새로고침 후 다시 시도하세요."); return; }
         if (dbUser && db) {
-          try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${date}.${checkerId}.${studentId}`]: increment(delta) }); invalidateCache(); if (delta > 0) showToast(`+1점 처리되었습니다.`); if (delta < 0) showToast(`-1점 처리되었습니다.`); } 
-          catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [checkerId]: { [studentId]: newVal } } } }, { merge: true }); invalidateCache(); }
+          try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${date}.${checkerId}.${studentId}`]: increment(delta) }); invalidateCache(); if (delta > 0) showToast(`+1점 처리되었습니다.`); if (delta < 0) showToast(`-1점 처리되었습니다.`); }
+          catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [checkerId]: { [studentId]: delta } } } }, { merge: true }); invalidateCache(); }
+          logAudit("score_teacher", { date, category: checkerId, studentId, delta, by: authStatus.type, byId: authStatus.user?.id });
         }
       };
 
+      // 학생 본인 비밀번호 변경
+      const submitPasswordChange = async () => {
+        if (authStatus.type !== "student") return showToast("학생 로그인 상태에서만 사용 가능합니다.");
+        if (!pwNew.trim() || !pwNew2.trim()) return showToast("새 비밀번호를 입력해주세요.");
+        if (pwNew !== pwNew2) return showToast("새 비밀번호 확인이 일치하지 않습니다.");
+        if (pwNew.length < 4) return showToast("비밀번호는 4자 이상이어야 합니다.");
+        const sid = authStatus.user.id;
+        // 현재 비밀번호 검증
+        let curOk = false;
+        try {
+          const authSnap = await getDoc(doc(db, "studentAuth", String(sid)));
+          if (authSnap.exists() && authSnap.data().hash) {
+            const oldHash = await hashPassword(pwOld.trim());
+            curOk = (authSnap.data().hash === oldHash);
+          } else {
+            // 처음 변경: 선생님이 정한 초기 비번과 비교
+            const me = students.find(x => x.id === sid);
+            curOk = me && String(me.password).trim() === pwOld.trim();
+          }
+        } catch(e) { console.error("현재 비번 검증 실패:", e); }
+        if (!curOk) return showToast("현재 비밀번호가 맞지 않습니다.");
+        // 새 해시 저장
+        try {
+          const newHash = await hashPassword(pwNew.trim());
+          await setDoc(doc(db, "studentAuth", String(sid)), {
+            hash: newHash,
+            studentId: sid,
+            updatedAt: Date.now()
+          });
+          logAudit("student_pw_change", { studentId: sid });
+          showToast("✅ 비밀번호가 변경되었습니다.");
+          setPwOld(""); setPwNew(""); setPwNew2(""); setShowPwChange(false);
+        } catch(e) {
+          console.error(e);
+          showToast("비밀번호 변경 실패: " + (e.code || e.message));
+        }
+      };
+
+      // 선생님이 특정 학생의 비밀번호를 초기화 (studentAuth 문서 삭제)
+      const resetStudentPassword = (sid, name) => {
+        if (authStatus.type !== "teacher") return;
+        setConfirmModal({
+          title: "비밀번호 초기화",
+          message: `'${name}' 학생의 비밀번호를 초기화하시겠습니까?\n초기화 후엔 학생이 선생님이 정한 초기 비번으로 로그인해야 합니다.`,
+          onConfirm: async () => {
+            try {
+              await deleteDoc(doc(db, "studentAuth", String(sid)));
+              logAudit("teacher_reset_student_pw", { studentId: sid });
+              showToast(`✅ ${name} 학생의 비밀번호를 초기화했습니다.`);
+            } catch(e) { showToast("초기화 실패: " + (e.code || e.message)); }
+            setConfirmModal(null);
+          }
+        });
+      };
+
+      // 역할별 점수 진단: records를 훑어 역할별 합계 + 손실 가능성을 분석
+      const [roleDiag, setRoleDiag] = useState(null);
+      const [canonicalChoice, setCanonicalChoice] = useState({});
+      const [mergeInProgress, setMergeInProgress] = useState(false);
+      const diagnoseRoleScores = async () => {
+        if (!db) return showToast("로그인 후 사용하세요.");
+        try {
+          // 1) mainState와 sharedRecords를 병렬로 받기 (네트워크 왕복 절반으로 단축)
+          const [msSnap, srSnap] = await Promise.all([
+            getDoc(doc(db, "classData", "mainState")),
+            getDoc(doc(db, "classData", "sharedRecords")),
+          ]);
+          const mainRecords = (msSnap.data() || {}).records || {};
+          const sharedPeerData = (srSnap.exists() ? srSnap.data() : {}).peer || {};
+
+          // 역할별 집계 (mainState 기준)
+          const byRoleMain = {};
+          const byRoleShared = {};
+          const overrides = []; // mainState엔 +N이 있는데 sharedRecords가 false로 덮음
+          const undefinedRoles = new Set(); // roleSettings에 없는 역할
+          let mainCount = 0, sharedCount = 0;
+
+          Object.entries(mainRecords).forEach(([date, dR]) => {
+            if (!dR || typeof dR !== 'object') return;
+            Object.entries(dR).forEach(([cId, tgts]) => {
+              if (!tgts || typeof tgts !== 'object') return;
+              Object.entries(tgts).forEach(([tId, val]) => {
+                const p = getPoints(val);
+                const role = parseRoleName(val, cId);
+                if (role && p !== 0) {
+                  byRoleMain[role] = (byRoleMain[role] || 0) + Math.abs(p);
+                  mainCount++;
+                  if (role !== "선생님 권한 부여" && role !== "거북이 독서 지킴이" && !roleSettings[role]) {
+                    undefinedRoles.add(role);
+                  }
+                }
+                // sharedRecords의 같은 위치가 false로 덮어쓰는지 확인
+                if (p !== 0 && sharedPeerData[date]?.[cId]?.[tId] === false) {
+                  overrides.push({ date, cId, tId, val, lostPts: Math.abs(p), role });
+                }
+              });
+            });
+          });
+
+          Object.entries(sharedPeerData).forEach(([date, dR]) => {
+            if (!dR || typeof dR !== 'object') return;
+            Object.entries(dR).forEach(([cId, tgts]) => {
+              if (!tgts || typeof tgts !== 'object') return;
+              Object.entries(tgts).forEach(([tId, val]) => {
+                const p = getPoints(val);
+                const role = parseRoleName(val, cId);
+                if (role && p !== 0) {
+                  byRoleShared[role] = (byRoleShared[role] || 0) + Math.abs(p);
+                  sharedCount++;
+                }
+              });
+            });
+          });
+
+          const lostPts = overrides.reduce((a, b) => a + b.lostPts, 0);
+          const lostByRole = {};
+          overrides.forEach(o => { lostByRole[o.role] = (lostByRole[o.role] || 0) + o.lostPts; });
+
+          setRoleDiag({
+            byRoleMain, byRoleShared, mainCount, sharedCount,
+            overrides, lostPts, lostByRole,
+            undefinedRoles: Array.from(undefinedRoles)
+          });
+        } catch(e) { console.error(e); showToast("진단 실패: " + (e.code || e.message)); }
+      };
+
+      // 진단 결과에서 override(sharedRecords false → mainState 가림)를 일괄 제거
+      const restoreOverriddenScores = async () => {
+        if (!roleDiag || !roleDiag.overrides.length) return;
+        setConfirmModal({
+          title: "덮어쓴 점수 복구",
+          message: `mainState에 +N점이 있는데 sharedRecords가 false로 덮어 ${roleDiag.lostPts}점이 가려지고 있습니다.\n${roleDiag.overrides.length}건의 false 항목을 sharedRecords에서 제거하시겠습니까?\n(mainState의 원래 값이 다시 노출됩니다.)`,
+          onConfirm: async () => {
+            setConfirmModal(null);
+            try {
+              const updates = {};
+              roleDiag.overrides.forEach(o => {
+                updates[`peer.${o.date}.${o.cId}.${o.tId}`] = deleteField();
+              });
+              await updateDoc(doc(db, "classData", "sharedRecords"), updates);
+              showToast(`✅ ${roleDiag.overrides.length}건 복구 완료. 새로고침하세요.`);
+              logAudit("restore_overrides", { count: roleDiag.overrides.length, lostPts: roleDiag.lostPts });
+              setRoleDiag(null);
+            } catch(e) { showToast("복구 실패: " + (e.code || e.message)); }
+          }
+        });
+      };
+
+      // 유사한 역할명을 자동 그룹화 — roleDiag가 바뀔 때만 재계산 (렌더마다 돌지 않도록 메모이제이션)
+      const roleGroups = useMemo(() => {
+        if (!roleDiag) return [];
+        const allNames = new Set([
+          ...Object.keys(roleDiag.byRoleMain || {}),
+          ...Object.keys(roleDiag.byRoleShared || {})
+        ]);
+        const groupKey = (name) => {
+          // "12. " 같은 숫자 prefix 제거 → 공백/구두점 제거 → 처음 숫자 나오기 전까지 또는 3글자
+          let cleaned = String(name).replace(/^\d+\.\s*/, "").trim();
+          let norm = cleaned.replace(/[\s,()\/&]/g, "");
+          let key = "";
+          for (let i = 0; i < norm.length; i++) {
+            if (/[0-9]/.test(norm[i])) break;
+            key += norm[i];
+            if (key.length >= 3) break;
+          }
+          return key || norm.substring(0, 3) || name;
+        };
+        const groups = {};
+        allNames.forEach(name => {
+          // 특수 이름은 제외
+          if (name === "선생님 권한 부여" || name === "거북이 독서 지킴이" || name === "이전 역할(기록됨)") return;
+          const k = groupKey(name);
+          if (!groups[k]) groups[k] = [];
+          groups[k].push(name);
+        });
+        // 2개 이상 변형 있는 그룹만, 그룹 내 점수합 큰 순
+        const result = [];
+        Object.entries(groups).forEach(([k, variants]) => {
+          if (variants.length < 2) return;
+          // 변형별 점수
+          const withPts = variants.map(v => ({
+            name: v,
+            pts: (roleDiag.byRoleMain[v] || 0) + (roleDiag.byRoleShared[v] || 0)
+          })).sort((a, b) => b.pts - a.pts);
+          result.push({ key: k, variants: withPts, total: withPts.reduce((s, x) => s + x.pts, 0) });
+        });
+        return result.sort((a, b) => b.total - a.total);
+      }, [roleDiag]);
+
+      // 역할명 변형 통합: 모든 변형을 canonical로 치환 (records 안의 모든 형식 처리)
+      const mergeRoleVariants = async (variants, canonical) => {
+        if (!variants.length || !canonical) return showToast("통합할 이름과 변형을 선택하세요.");
+        if (mergeInProgress) return;
+        if (authStatus.type !== "teacher") return showToast("선생님으로 로그인 후 사용하세요.");
+        // canonical 자체는 변형에서 제외
+        const toReplace = variants.filter(v => v !== canonical);
+        if (!toReplace.length) return showToast("기준 이름과 동일한 변형만 있어 통합할 필요가 없습니다.");
+
+        setMergeInProgress(true);
+        try {
+          const [msSnap, srSnap] = await Promise.all([
+            getDoc(doc(db, "classData", "mainState")),
+            getDoc(doc(db, "classData", "sharedRecords")),
+          ]);
+          const origRecords = (msSnap.data() || {}).records || {};
+          // structuredClone은 JSON.parse(JSON.stringify(...))보다 2~3배 빠르고 GC 부담도 적음
+          const mainRecords = structuredClone(origRecords);
+          const sharedPeer = srSnap.exists() ? structuredClone((srSnap.data() || {}).peer || {}) : {};
+
+          // 안전장치: 원본 records가 비어있으면 통합할 게 없음
+          const origDateCount = Object.keys(origRecords).length;
+          if (origDateCount === 0) {
+            showToast("⚠️ mainState.records가 비어있어 통합할 게 없습니다.");
+            setMergeInProgress(false);
+            return;
+          }
+
+          const replaceIn = (record) => {
+            let count = 0;
+            Object.keys(record).forEach(date => {
+              if (!record[date] || typeof record[date] !== "object") return;
+              Object.keys(record[date]).forEach(cId => {
+                if (!record[date][cId] || typeof record[date][cId] !== "object") return;
+                Object.keys(record[date][cId]).forEach(tId => {
+                  const val = record[date][cId][tId];
+                  if (typeof val !== "string") return;
+                  if (toReplace.includes(val)) {
+                    record[date][cId][tId] = canonical; count++;
+                  } else if (val.startsWith("[-] ")) {
+                    const rn = val.substring(4);
+                    if (toReplace.includes(rn)) { record[date][cId][tId] = "[-] " + canonical; count++; }
+                  } else if (val.startsWith("[v] ")) {
+                    const us = val.indexOf("_");
+                    if (us > 4) {
+                      const ptStr = val.substring(4, us);
+                      const rn = val.substring(us + 1);
+                      if (toReplace.includes(rn)) { record[date][cId][tId] = `[v] ${ptStr}_${canonical}`; count++; }
+                    }
+                  }
+                });
+              });
+            });
+            return count;
+          };
+
+          const mainChanges = replaceIn(mainRecords);
+          const sharedChanges = replaceIn(sharedPeer);
+
+          if (mainChanges === 0 && sharedChanges === 0) {
+            showToast("⚠️ 치환된 기록 없음. 역할명 정확히 일치 확인하세요.");
+            setMergeInProgress(false);
+            return;
+          }
+
+          // 안전장치: 쓰기 전 mainRecords가 원본보다 작아졌으면 중단
+          const newDateCount = Object.keys(mainRecords).length;
+          if (newDateCount < origDateCount) {
+            console.error("[merge] 위험: 원본 날짜 수", origDateCount, "→", newDateCount, "감소");
+            showToast("⚠️ 데이터 무결성 경고로 통합 취소. 콘솔 확인.");
+            setMergeInProgress(false);
+            return;
+          }
+
+          if (mainChanges > 0) {
+            await updateDoc(doc(db, "classData", "mainState"), { records: mainRecords });
+            invalidateCache();
+          }
+          if (sharedChanges > 0 && srSnap.exists()) {
+            await updateDoc(doc(db, "classData", "sharedRecords"), { peer: sharedPeer });
+          }
+          // 로컬 records 즉시 갱신: mainRecords + sharedPeer 한 번에 머지 (DB 쓰기와 동일한 결과)
+          if (mainChanges > 0 || sharedChanges > 0) {
+            const merged = { ...mainRecords };
+            Object.entries(sharedPeer).forEach(([date, dR]) => {
+              merged[date] = { ...(merged[date] || {}) };
+              Object.entries(dR || {}).forEach(([cId, tgts]) => {
+                merged[date][cId] = { ...(merged[date][cId] || {}), ...(tgts || {}) };
+              });
+            });
+            setRecords(merged);
+          }
+          // rolePool에서 변형 제거 + canonical 보장
+          let newPool = rolePool.filter(r => !toReplace.includes(r));
+          if (!newPool.includes(canonical)) newPool = [...newPool, canonical];
+          if (newPool.length !== rolePool.length || newPool.includes(canonical) !== rolePool.includes(canonical)) {
+            setRolePool(newPool);
+            await saveToDB({ rolePool: newPool });
+          }
+          // 학생 데이터의 역할 필드도 변형이면 canonical로 교체
+          const updatedStudents = students.map(s => toReplace.includes(s.role) ? { ...s, role: canonical } : s);
+          if (JSON.stringify(updatedStudents) !== JSON.stringify(students)) {
+            setStudents(updatedStudents);
+            await saveToDB({ students: updatedStudents });
+          }
+
+          logAudit("merge_role_variants", { canonical, replaced: toReplace, mainChanges, sharedChanges });
+          showToast(`✅ '${canonical}'로 통합 완료: 변형 ${toReplace.length}개, 기록 ${mainChanges + sharedChanges}건`);
+          // 진단 결과 갱신
+          await diagnoseRoleScores();
+        } catch(e) {
+          console.error(e);
+          showToast("통합 실패: " + (e.code || e.message));
+        }
+        setMergeInProgress(false);
+      };
+
+      // 🐢 거북이 독서 데이터 백업 — 1학기 데이터를 한 JSON 파일로 내보냄
+      const [backupSummary, setBackupSummary] = useState(null);
+      const exportTurtleBackup = async () => {
+        if (!db) return showToast("로그인 후 사용하세요.");
+        if (authStatus.type !== "teacher") return showToast("선생님으로 로그인 후 사용하세요.");
+        showToast("거북이 데이터 수집 중...");
+        try {
+          // 1) 모든 소스 병렬 fetch
+          const [rrSnap, msSnap, srSnap] = await Promise.all([
+            getDocs(collection(db, "readingReports")),
+            getDoc(doc(db, "classData", "mainState")),
+            getDoc(doc(db, "classData", "sharedRecords")),
+          ]);
+
+          // 2) readingReports 전체
+          const readingReports = rrSnap.docs.map(d => ({ docId: d.id, ...d.data() }));
+
+          // 3) booksRead (두 소스)
+          const msData = msSnap.data() || {};
+          const srData = srSnap.exists() ? srSnap.data() : {};
+          const booksRead = {
+            mainState: msData.booksRead || {},
+            sharedRecords: srData.booksRead || {},
+          };
+
+          // 4) records에서 [거북이] 형식만 추출 (mainState + sharedRecords.peer)
+          const extractTurtle = (records) => {
+            const out = [];
+            Object.entries(records || {}).forEach(([date, dR]) => {
+              if (!dR || typeof dR !== "object") return;
+              Object.entries(dR).forEach(([cId, tgts]) => {
+                if (!tgts || typeof tgts !== "object") return;
+                Object.entries(tgts).forEach(([tId, val]) => {
+                  if (typeof val === "string" && val.startsWith("[거북이] ")) {
+                    out.push({ date, checkerId: cId, targetId: tId, value: val });
+                  }
+                });
+              });
+            });
+            return out;
+          };
+          const turtleMain = extractTurtle(msData.records);
+          const turtlePeer = extractTurtle(srData.peer);
+
+          // 5) 학생 명단(이름 매핑용)
+          const studentList = (msData.students || students || []).map(s => ({ id: s.id, name: s.name }));
+
+          // 6) 백업 객체 구성
+          const backup = {
+            meta: {
+              exportedAt: new Date().toISOString(),
+              exportedAtLocal: new Date().toLocaleString("ko-KR"),
+              projectId: "w-program",
+              version: "1.0",
+              note: "1학기 거북이 독서 전체 백업 (readingReports + booksRead + 거북이 점수 이력)"
+            },
+            students: studentList,
+            readingReports,
+            booksRead,
+            turtleScores: { mainState: turtleMain, sharedRecords: turtlePeer },
+            counts: {
+              readingReports: readingReports.length,
+              readingReportsNonDraft: readingReports.filter(r => !r.isDraft).length,
+              booksReadMainStudents: Object.keys(booksRead.mainState).length,
+              booksReadSharedStudents: Object.keys(booksRead.sharedRecords).length,
+              turtleScoreMain: turtleMain.length,
+              turtleScoreShared: turtlePeer.length,
+            }
+          };
+
+          // 7) 파일 다운로드
+          const json = JSON.stringify(backup, null, 2);
+          const blob = new Blob([json], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          const dateStr = new Date().toISOString().slice(0, 10);
+          a.href = url;
+          a.download = `거북이독서_백업_${dateStr}.json`;
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+
+          setBackupSummary(backup.counts);
+          logAudit("turtle_backup", backup.counts);
+          showToast(`✅ 백업 완료: 감상문 ${backup.counts.readingReports}건`);
+        } catch (e) {
+          console.error("백업 실패:", e);
+          showToast("백업 실패: " + (e.code || e.message));
+        }
+      };
+
+      // 책 카운트 재계산: readingReports 컬렉션의 비-임시저장 글 개수를 기준으로
+      // 모든 학생의 booksRead를 정확히 다시 설정.
+      const recomputeBookCounts = async () => {
+        if (!db) return showToast("로그인 정보가 없어 실행할 수 없습니다.");
+        if (authStatus.type !== "teacher") return showToast("선생님으로 로그인 후 사용하세요.");
+        setConfirmModal({
+          title: "책 카운트 재계산",
+          message: "독서감상문 컬렉션을 기준으로 모든 학생의 책 권수를 정확히 다시 계산합니다.\n(임시저장 제외)\n\n진행하시겠습니까?",
+          onConfirm: async () => {
+            setConfirmModal(null);
+            try {
+              const snap = await getDocs(collection(db, "readingReports"));
+              const counts = {};
+              let totalDocs = snap.size, draftDocs = 0, noStudentId = 0;
+              snap.docs.forEach(d => {
+                const r = d.data();
+                if (!r) return;
+                if (r.isDraft) { draftDocs++; return; }
+                if (r.studentId === undefined || r.studentId === null) { noStudentId++; return; }
+                counts[r.studentId] = (counts[r.studentId] || 0) + 1;
+              });
+              console.log("[재계산] 총 문서:", totalDocs, "임시저장:", draftDocs, "studentId없음:", noStudentId, "카운트:", counts);
+              const total = Object.values(counts).reduce((a,b)=>a+b, 0);
+              if (totalDocs > 0 && total === 0) {
+                showToast(`⚠️ 문서는 ${totalDocs}개인데 정식(isDraft:false) 글이 0건입니다. 콘솔(F12) 확인.`);
+                return;
+              }
+              // mainState.booksRead = 정식 감상문 권수만 (거북이 peer 가산분은 sharedRecords에 보존)
+              await updateDoc(doc(db, "classData", "mainState"), { booksRead: counts });
+              invalidateCache();
+              setBooksRead(prev => {
+                // 로컬도 동일하게: mainState 부분만 counts로, sharedPeer 가산분 유지
+                const merged = { ...counts };
+                // 기존 prev에서 counts에 없는 sharedRecords 가산분만 더해줌
+                Object.entries(prev || {}).forEach(([sid, v]) => {
+                  const mainPart = counts[sid] || 0;
+                  const extra = (v || 0) - mainPart;
+                  if (extra !== 0) merged[sid] = (merged[sid] || 0) + extra;
+                });
+                return merged;
+              });
+              logAudit("recompute_books", { counts, totalDocs, draftDocs, noStudentId });
+              showToast(`✅ 재계산 완료: 정식 ${total}권 (전체문서 ${totalDocs}, 임시 ${draftDocs}). 거북이 추가분은 보존됨.`);
+            } catch(e) {
+              console.error(e);
+              showToast("재계산 실패: " + (e.code || e.message));
+            }
+          }
+        });
+      };
+
+      // 점수 수동 보정: 특정 날짜/카테고리/학생의 점수를 절대값으로 덮어쓰기
+      const fixTeacherScoreAbsolute = async (studentId, date, category, absoluteValue) => {
+        if (!dbUser || !db) return showToast("로그인 정보가 없어 저장할 수 없습니다.");
+        const sid = parseInt(studentId);
+        const val = Number(absoluteValue);
+        if (!sid) return showToast("학생을 선택해주세요.");
+        if (!date) return showToast("날짜를 선택해주세요.");
+        if (!category) return showToast("카테고리를 선택해주세요.");
+        if (!Number.isFinite(val)) return showToast("새 값(숫자)을 입력해주세요.");
+
+        setRecords((prev) => {
+          const safePrev = prev || {};
+          const dayData = safePrev[date] || {};
+          const checkerData = dayData[category] || {};
+          return { ...safePrev, [date]: { ...dayData, [category]: { ...checkerData, [sid]: val } } };
+        });
+        try {
+          await updateDoc(doc(db, "classData", "mainState"), { [`records.${date}.${category}.${sid}`]: val });
+        } catch (e) {
+          await setDoc(doc(db, "classData", "mainState"), { records: { [date]: { [category]: { [sid]: val } } } }, { merge: true });
+        }
+        invalidateCache();
+        logAudit("score_fix", { date, category, studentId: sid, newValue: val, by: authStatus.type, byId: authStatus.user?.id });
+        showToast(`✅ ${date} ${category} 학생${sid}번 점수를 ${val}점으로 수정했습니다.`);
+      };
+
       const setPeerRecord = async (checkerId, checkerRole, targetId, point) => {
-        const today = getLocalDateString(new Date()); 
+        const today = getLocalDateString(new Date());
         let newVal = false;
         if (point !== 0) {
            newVal = `[v] ${point}_${checkerRole}`;
         }
-        
-        setRecords((prev) => { 
-           const safePrev = prev||{}; 
-           return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } 
+
+        setRecords((prev) => {
+           const safePrev = prev||{};
+           return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } }
         });
-        
-        if (dbUser && db) { 
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${today}.${checkerId}.${targetId}`]: newVal }); invalidateCache(); } 
-            catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); invalidateCache(); } 
+        setSharedPeer((prev) => {
+           const safePrev = prev||{};
+           return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } }
+        });
+
+        if (!dbUser) { showToast("⚠️ 인증 안된 상태입니다. 새로고침 후 다시 시도하세요."); return; }
+        if (dbUser && db) {
+            // 보안 규칙에 따라 학생도 쓸 수 있는 sharedRecords에 저장
+            try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`peer.${today}.${checkerId}.${targetId}`]: newVal }); }
+            catch (e) {
+              try { await setDoc(doc(db, "classData", "sharedRecords"), { peer: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); }
+              catch(e2) { console.error("또래평가 저장 실패:", e2); showToast("⚠️ 또래평가 저장 실패: " + (e2.code || e2.message)); return; }
+            }
+            logAudit("score_peer", { date: today, checkerId, checkerRole, targetId, point, by: authStatus.type, byId: authStatus.user?.id });
         }
       };
 
       const setTurtleRecord = async (checkerId, targetId, newPts) => {
         const today = getLocalDateString(new Date()); let newVal = false; if (newPts !== 0) newVal = `[거북이] ${newPts}`;
         setRecords((prev) => { const safePrev = prev||{}; return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } });
-        if (dbUser && db) { 
-            try { await updateDoc(doc(db, "classData", "mainState"), { [`records.${today}.${checkerId}.${targetId}`]: newVal }); invalidateCache(); } 
-            catch (e) { await setDoc(doc(db, "classData", "mainState"), { records: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); invalidateCache(); } 
+        setSharedPeer((prev) => { const safePrev = prev||{}; return { ...safePrev, [today]: { ...(safePrev[today] || {}), [checkerId]: { ...(safePrev[today]?.[checkerId] || {}), [targetId]: newVal } } } });
+        if (!dbUser) { showToast("⚠️ 인증 안된 상태입니다. 새로고침 후 다시 시도하세요."); return; }
+        if (dbUser && db) {
+            try { await updateDoc(doc(db, "classData", "sharedRecords"), { [`peer.${today}.${checkerId}.${targetId}`]: newVal }); }
+            catch (e) {
+              try { await setDoc(doc(db, "classData", "sharedRecords"), { peer: { [today]: { [checkerId]: { [targetId]: newVal } } } }, { merge: true }); }
+              catch(e2) { console.error("거북이 점수 저장 실패:", e2); showToast("⚠️ 거북이 점수 저장 실패: " + (e2.code || e2.message)); return; }
+            }
+            logAudit("score_turtle", { date: today, checkerId, targetId, newPts, by: authStatus.type, byId: authStatus.user?.id });
         }
       };
 
@@ -1033,16 +1884,21 @@
         try { document.execCommand("copy"); showToast("✅ 복사 완료!"); } catch (err) { showToast("복사 실패"); } document.body.removeChild(textArea);
       };
 
-      const changeTeacherPassword = (newPw) => { if (newPw.trim() === "") return; setTeacherPassword(newPw); saveToDB({ teacherPassword: newPw }); showToast("비밀번호 변경 완료."); };
+      const changeTeacherPassword = () => { showToast("Firebase Console → Authentication에서 변경하세요."); };
 
       const handleRewardChange = (type, tier, value) => {
         if (type === "silver") { const newRewards = { ...silverRewards, [tier]: value }; setSilverRewards(newRewards); saveToDB({ silverRewards: newRewards }); } 
         else { const newRewards = { ...goldRewards, [tier]: value }; setGoldRewards(newRewards); saveToDB({ goldRewards: newRewards }); }
       };
 
-      const logout = () => { 
-        setAuthStatus({ type: null, user: null }); 
-        setPasswordInput(""); setError(""); setStudentTab("overview"); setTeacherTab("overview"); setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setEditingReportId(null); setIsReportAnonymous(false);
+      const logout = async () => {
+        const wasTeacher = authStatus.type === "teacher";
+        setAuthStatus({ type: null, user: null });
+        setPasswordInput(""); setEmailInput(""); setError(""); setStudentTab("overview"); setTeacherTab("overview"); setReportForm({ title: "", author: "", publisher: "", scene: "", quote: "", summary: "", thoughts: "" }); setEditingReportId(null); setIsReportAnonymous(false);
+        if (wasTeacher && auth && auth.currentUser && auth.currentUser.email) {
+          try { await signOut(auth); } catch(e) {}
+          try { await signInAnonymously(auth); } catch(e) {}
+        }
       };
 
       const handleDragStartStudent = (e, index) => { e.dataTransfer.setData("sourceIndex", index); };
@@ -1076,9 +1932,9 @@
       };
 
       const getTeacherRoleStatsArray = () => {
-        const stats = {}; rolePool.forEach(r => stats[r] = {role:r, pts:0, receivers:{}});
-        stats["선생님 권한 부여"] = {role:"선생님 권한 부여", pts:0, receivers:{}};
-        Object.values(records || {}).forEach(dR => {
+        const stats = {}; rolePool.forEach(r => stats[r] = {role:r, pts:0, receivers:{}, lastDate:""});
+        stats["선생님 권한 부여"] = {role:"선생님 권한 부여", pts:0, receivers:{}, lastDate:""};
+        Object.entries(records || {}).forEach(([date, dR]) => {
           if(!dR || typeof dR !== 'object') return;
           Object.entries(dR).forEach(([cId, tgts]) => {
             if(!tgts || typeof tgts !== 'object') return;
@@ -1092,11 +1948,22 @@
                 else rName = val;
               }
               else { const c = students.find(s=>s.id===parseInt(cId)); if(c) rName = c.role; }
-              if (p!==0) { if(!stats[rName]) stats[rName]={role:rName, pts:0, receivers:{}}; stats[rName].pts += Math.abs(p); stats[rName].receivers[tId]=(stats[rName].receivers[tId]||0)+p; }
+              if (p!==0) {
+                if(!stats[rName]) stats[rName]={role:rName, pts:0, receivers:{}, lastDate:""};
+                stats[rName].pts += Math.abs(p);
+                stats[rName].receivers[tId]=(stats[rName].receivers[tId]||0)+p;
+                if (date > stats[rName].lastDate) stats[rName].lastDate = date;
+              }
             });
           });
         });
-        return Object.values(stats).sort((a,b)=>b.pts-a.pts);
+        const arr = Object.values(stats);
+        arr.forEach(st => {
+          st.assignees = students.filter(s => s.role === st.role).map(s => ({id: s.id, name: s.name}));
+        });
+        if (roleStatsSort === "name") return arr.sort((a,b)=>a.role.localeCompare(b.role, "ko"));
+        if (roleStatsSort === "recent") return arr.sort((a,b)=> (b.lastDate||"").localeCompare(a.lastDate||""));
+        return arr.sort((a,b)=>b.pts-a.pts);
       };
 
       const requestCoinItem = async (item, myInfo) => {
@@ -1383,6 +2250,110 @@
         );
       };
 
+      const renderPollCard = (poll, isTeacher, myInfoId) => {
+        const { tally, voterCount } = getPollTally(poll);
+        const isClosed = poll.status === "closed";
+        const myVote = (poll.votes || {})[myInfoId];
+        const hasVoted = myVote !== undefined;
+        const showResults = isTeacher || isClosed;
+        const totalVotes = Object.values(tally).reduce((a, b) => a + b, 0) || 1;
+        const sel = pollSelections[poll.id];
+
+        return (
+          <div key={poll.id} className={`bg-white border rounded-xl p-4 shadow-sm ${isClosed ? "border-gray-200" : "border-cyan-300"}`}>
+            <div className="flex justify-between items-start gap-2 mb-2">
+              <div className="flex-1">
+                <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                  <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${isClosed ? "bg-gray-200 text-gray-600" : "bg-cyan-100 text-cyan-800"}`}>{isClosed ? "마감됨" : "진행중"}</span>
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">{poll.isMultiple ? "복수선택" : "단일선택"}</span>
+                </div>
+                <h4 className="font-black text-gray-800 text-sm">{poll.title}</h4>
+                <span className="text-[9px] text-gray-400">{poll.date} · {voterCount}명 참여</span>
+              </div>
+              {isTeacher && (
+                <div className="flex gap-1 shrink-0">
+                  <button type="button" onClick={() => togglePollStatus(poll)} className={`text-[10px] font-bold px-2 py-1 rounded ${isClosed ? "bg-cyan-50 text-cyan-700 hover:bg-cyan-100" : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}>{isClosed ? "재개" : "마감"}</button>
+                  <button type="button" onClick={() => deletePoll(poll.id)} className="text-red-500 bg-red-50 hover:bg-red-100 px-1.5 py-1 rounded"><Trash2 className="w-3.5 h-3.5"/></button>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1.5 mt-3">
+              {(poll.options || []).map(opt => {
+                const count = tally[opt.id] || 0;
+                const pct = showResults ? Math.round((count / totalVotes) * 100) : 0;
+                const iVotedThis = Array.isArray(myVote) && myVote.includes(opt.id);
+                const isSelected = poll.isMultiple ? (Array.isArray(sel) && sel.includes(opt.id)) : sel === opt.id;
+
+                if (showResults) {
+                  return (
+                    <div key={opt.id} className="relative">
+                      <div className={`relative overflow-hidden rounded-lg border ${iVotedThis ? "border-cyan-400" : "border-gray-200"} bg-gray-50`}>
+                        <div className="absolute inset-y-0 left-0 bg-cyan-100" style={{ width: `${pct}%` }}></div>
+                        <div className="relative flex justify-between items-center px-3 py-2">
+                          <span className="text-xs font-bold text-gray-700">{iVotedThis && "✓ "}{opt.text}</span>
+                          <span className="text-[11px] font-black text-cyan-700">{count}표 ({pct}%)</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // 학생 투표 입력 (진행중)
+                return (
+                  <label key={opt.id} className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${isSelected ? "border-cyan-400 bg-cyan-50" : "border-gray-200 hover:bg-gray-50"} ${hasVoted ? "opacity-60" : ""}`}>
+                    <input
+                      type={poll.isMultiple ? "checkbox" : "radio"}
+                      name={`poll_${poll.id}`}
+                      disabled={hasVoted}
+                      checked={isSelected || false}
+                      onChange={() => {
+                        if (poll.isMultiple) {
+                          const cur = Array.isArray(sel) ? sel : [];
+                          const next = cur.includes(opt.id) ? cur.filter(x => x !== opt.id) : [...cur, opt.id];
+                          setPollSelections({ ...pollSelections, [poll.id]: next });
+                        } else {
+                          setPollSelections({ ...pollSelections, [poll.id]: opt.id });
+                        }
+                      }}
+                      className="w-4 h-4 accent-cyan-600"
+                    />
+                    <span className="text-xs font-bold text-gray-700">{opt.text}</span>
+                  </label>
+                );
+              })}
+            </div>
+
+            {!isTeacher && !isClosed && (
+              hasVoted
+                ? <p className="text-[10px] text-cyan-700 font-bold mt-3 text-center bg-cyan-50 py-1.5 rounded-lg">✅ 투표를 완료했습니다. 결과는 마감 후 공개됩니다.</p>
+                : <button type="button" onClick={() => submitVote(poll)} className="w-full mt-3 py-2 bg-cyan-600 text-white font-bold text-xs rounded-lg hover:bg-cyan-700 transition-colors">투표하기</button>
+            )}
+            {!isTeacher && isClosed && (
+              <p className="text-[10px] text-gray-500 font-bold mt-3 text-center bg-gray-50 py-1.5 rounded-lg">{hasVoted ? "투표에 참여했습니다." : "참여하지 않은 투표입니다."} (마감됨)</p>
+            )}
+
+            {isTeacher && voterCount > 0 && (
+              <details className="mt-3 border-t border-gray-100 pt-2">
+                <summary className="text-[10px] font-bold text-indigo-600 cursor-pointer">참여자별 선택 보기 ({voterCount}명)</summary>
+                <div className="mt-2 space-y-1 max-h-40 overflow-y-auto custom-scrollbar">
+                  {Object.entries(poll.votes || {}).map(([sId, choices]) => {
+                    const st = students.find(s => String(s.id) === String(sId));
+                    const choiceTexts = (choices || []).map(cId => (poll.options.find(o => o.id === cId) || {}).text).filter(Boolean).join(", ");
+                    return (
+                      <div key={sId} className="flex justify-between items-center text-[10px] bg-gray-50 px-2 py-1 rounded">
+                        <span className="font-bold text-gray-700">{st ? st.name : `학생${sId}`}</span>
+                        <span className="text-gray-600">{choiceTexts || "-"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            )}
+          </div>
+        );
+      };
+
       const renderReadingReportCard = (report, isTeacher, myInfoId) => {
         const isExpanded = expandedReportId === report.id;
         const commentCount = (report.comments || []).length;
@@ -1495,17 +2466,42 @@
                 <button onClick={() => { setLoginTab("student"); setError(""); }} className={`flex-1 py-3 font-bold ${loginTab === "student" ? "text-blue-700 border-b-2 border-blue-700" : "text-gray-500 bg-gray-50"}`}>학생</button>
                 <button onClick={() => { setLoginTab("teacher"); setError(""); }} className={`flex-1 py-3 font-bold ${loginTab === "teacher" ? "text-blue-700 border-b-2 border-blue-700" : "text-gray-500 bg-gray-50"}`}>선생님</button>
               </div>
-              <form onSubmit={(e) => {
+              <form onSubmit={async (e) => {
                 e.preventDefault(); setError("");
                 if (loginTab === "teacher") {
-                  if (passwordInput === teacherPassword || passwordInput === "05041106") setAuthStatus({ type: "teacher", user: null });
-                  else setError("비밀번호 오류");
+                  // Firebase Auth 이메일/비밀번호 로그인
+                  try {
+                    await signInWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
+                    logAudit("login_teacher", { ok: true, email: emailInput.trim() });
+                    setAuthStatus({ type: "teacher", user: null });
+                    setPasswordInput("");
+                  } catch (err) {
+                    logAudit("login_teacher", { ok: false, email: emailInput.trim(), error: err?.code });
+                    setError("이메일 또는 비밀번호 오류");
+                  }
                 } else {
                   const s = students.find(x => x.id === parseInt(selectedId));
-                  if (!s || !s.password) { setError("접속 비번이 아직 설정되지 않았습니다."); return; }
-                  if (s && String(s.password).trim() === passwordInput.trim()) {
+                  if (!s) { setError("학생을 선택해주세요."); return; }
+                  // 학생 본인이 설정한 비번이 있으면 그것 우선, 없으면 선생님이 설정한 초기 비번으로 비교
+                  let ok = false;
+                  let usedCustom = false;
+                  try {
+                    const authSnap = await getDoc(doc(db, "studentAuth", String(s.id)));
+                    if (authSnap.exists() && authSnap.data().hash) {
+                      const inputHash = await hashPassword(passwordInput.trim());
+                      ok = (authSnap.data().hash === inputHash);
+                      usedCustom = true;
+                    }
+                  } catch(e) { console.warn("studentAuth 조회 실패, 초기 비번으로 폴백:", e); }
+                  if (!usedCustom) {
+                    if (!s.password) { setError("접속 비번이 아직 설정되지 않았습니다."); return; }
+                    ok = (String(s.password).trim() === passwordInput.trim());
+                  }
+                  logAudit("login_student", { ok, claimedId: s?.id, claimedName: s?.name, usedCustom });
+                  if (ok) {
                     setSelectedDate(getLocalDateString(new Date()));
                     setAuthStatus({ type: "student", user: s });
+                    setPasswordInput("");
                   } else setError("아이디(비번) 오류");
                 }
               }} className="p-6 space-y-4">
@@ -1517,9 +2513,15 @@
                     </select>
                   </div>
                 )}
+                {loginTab === "teacher" && (
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">이메일</label>
+                    <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="선생님 이메일" autoComplete="email" className="w-full p-2.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
+                  </div>
+                )}
                 <div>
                   <label className="block text-xs font-bold text-gray-700 mb-1">비밀번호</label>
-                  <input type="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className="w-full p-2.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
+                  <input type="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} autoComplete="current-password" className="w-full p-2.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
                 </div>
                 {error && <p className="text-red-500 text-xs font-bold text-center bg-red-50 py-1 rounded">{error}</p>}
                 <button type="submit" className="w-full bg-blue-700 text-white font-bold py-2.5 rounded hover:bg-blue-800">접속하기</button>
@@ -1549,24 +2551,28 @@
             return !isActuallyAnonymous || s.studentId === myInfo.id || s.isAnnouncement;
           });
 
-          const displaySuggestions = visibleSuggestions.filter(s => {
+          const filteredSuggestions = visibleSuggestions.filter(s => {
             if (!suggestionSearch.trim()) return true;
             const q = suggestionSearch.toLowerCase();
             return (s.title && s.title.toLowerCase().includes(q)) || (s.text && s.text.toLowerCase().includes(q)) || (s.studentName && s.studentName.toLowerCase().includes(q));
           });
+          const displaySuggestions = suggestionSearch.trim() ? filteredSuggestions : filteredSuggestions.slice(0, suggestionLimit);
+          const suggestionsHasMore = !suggestionSearch.trim() && filteredSuggestions.length > suggestionLimit;
 
-          const displayReadingReports = readingReports.filter(r => !r.isDraft && (!r.isAnonymous || r.studentId === myInfo.id)).filter(r => {
+          const filteredReadingReports = readingReports.filter(r => !r.isDraft && (!r.isAnonymous || r.studentId === myInfo.id)).filter(r => {
             if (!readingSearch.trim()) return true;
             const q = readingSearch.toLowerCase();
             return (r.title && r.title.toLowerCase().includes(q)) || (r.studentName && r.studentName.toLowerCase().includes(q)) || (r.author && r.author.toLowerCase().includes(q)) || (r.publisher && r.publisher.toLowerCase().includes(q));
           });
+          const displayReadingReports = readingSearch.trim() ? filteredReadingReports : filteredReadingReports.slice(0, reportLimit);
+          const readingReportsHasMore = !readingSearch.trim() && filteredReadingReports.length > reportLimit;
 
           const myReadingReports = readingReports.filter(r => r.studentId === myInfo.id);
 
           const sortedDisplaySuggestions = displaySuggestions.slice().sort((a, b) => {
             if (a.isAnnouncement && !b.isAnnouncement) return -1;
             if (!a.isAnnouncement && b.isAnnouncement) return 1;
-            return b.id - a.id; 
+            return 0;
           });
 
           const sortedShopItems = [...shopItems].sort((a,b)=>a.price-b.price);
@@ -1574,6 +2580,11 @@
 
           content = (
             <div className="min-h-screen bg-slate-100 p-2 md:p-4 text-gray-800">
+              {!dbUser && (
+                <div className="max-w-4xl mx-auto bg-red-600 text-white p-2 rounded-t-xl text-center text-xs font-bold">
+                  ⚠️ Firebase 익명 인증 실패 — 점수 변경이 서버에 저장되지 않습니다. 선생님께 알려주세요. (Firebase Console에서 Anonymous Auth 활성화 필요)
+                </div>
+              )}
               <div className="max-w-4xl mx-auto flex flex-col h-full min-h-[95vh] bg-white rounded-xl shadow-lg overflow-hidden">
                 <header className="bg-blue-700 text-white p-3 flex justify-between items-center shrink-0">
                   <div className="flex items-center gap-2"><UserCheck className="w-8 h-8 text-blue-200 bg-blue-800 p-1.5 rounded-full" /><div><h1 className="text-sm font-black">{myInfo.id}번 {myInfo.name}</h1><p className="text-xs font-bold text-blue-200">역할: <span className="bg-blue-100 text-blue-800 px-1 rounded">{myInfo.role}</span></p></div></div>
@@ -1584,6 +2595,7 @@
                       <p className="text-[9px] text-blue-300 font-bold border-t border-blue-600 pt-0.5">보유 실버</p>
                       <p className="text-sm font-black text-yellow-400 leading-none">{silverTokens}개</p>
                     </div>
+                    <button type="button" onClick={() => { setPwOld(""); setPwNew(""); setPwNew2(""); setShowPwChange(true); }} className="bg-blue-800 p-2 rounded-lg hover:bg-blue-900 flex items-center gap-1" title="비밀번호 변경"><Key className="w-4 h-4"/><span className="text-[10px] font-bold hidden md:inline">비번변경</span></button>
                     <button type="button" onClick={logout} className="bg-blue-800 p-2 rounded-lg hover:bg-blue-900"><LogOut className="w-4 h-4"/></button>
                   </div>
                 </header>
@@ -1594,6 +2606,7 @@
                   <button onClick={() => setStudentTab("shop")} className={`flex-1 py-2.5 ${studentTab==="shop"?"text-orange-600 border-b-2 border-orange-500 bg-white":"text-gray-500"}`}>🪙 상점</button>
                   <button onClick={() => setStudentTab("reading")} className={`flex-1 py-2.5 ${studentTab==="reading"?"text-emerald-700 border-b-2 border-emerald-600 bg-white":"text-gray-500"}`}>🐢 독서</button>
                   <button onClick={() => setStudentTab("suggestions")} className={`flex-1 py-2.5 ${studentTab==="suggestions"?"text-purple-700 border-b-2 border-purple-600 bg-white":"text-gray-500"}`}>💬 건의</button>
+                  <button onClick={() => setStudentTab("polls")} className={`flex-1 py-2.5 ${studentTab==="polls"?"text-cyan-700 border-b-2 border-cyan-600 bg-white":"text-gray-500"}`}>📊 투표</button>
                 </div>
 
                 <div className="p-3 md:p-5 overflow-y-auto bg-slate-50 flex-1">
@@ -1614,11 +2627,11 @@
                       )}
 
                       {/* 공지사항 */}
-                      {suggestions.filter(s => s.isAnnouncement).length > 0 && (
+                      {announcements.length > 0 && (
                         <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 mb-4 shadow-sm animate-in slide-in-from-top-2">
                           <h3 className="text-sm font-black text-rose-800 flex items-center gap-1.5 mb-2"><MessageSquare className="w-4 h-4"/> 🚨 선생님 공지사항</h3>
                           <div className="space-y-2">
-                            {suggestions.filter(s => s.isAnnouncement).sort((a, b) => b.id - a.id).map(ann => (
+                            {announcements.map(ann => (
                               <div key={ann.id} className="bg-white p-3 rounded-lg shadow-sm border border-rose-100">
                                  <div className="flex justify-between items-center mb-1.5"><span className="text-xs font-bold text-rose-900">{ann.title}</span><span className="text-[9px] text-gray-400">{ann.date}</span></div>
                                  <p className="text-[11px] text-gray-700 whitespace-pre-wrap leading-relaxed">{linkify(ann.text)}</p>
@@ -1809,6 +2822,7 @@
                       {studentReadingSubTab === "write" && (
                         <div className="space-y-4 animate-in slide-in-from-left-2">
                           {renderTurtleMarathonDisplay()}
+                          {renderStudentReadingStatus()}
                           <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-200 shadow-sm">
                             <h4 className="text-sm font-bold text-emerald-800 mb-3 flex items-center gap-1.5"><Star className="w-4 h-4"/> {editingReportId ? "감상문 수정하기" : `감상문 쓰고 마라톤 1권 누적하기 (${readingCharLimit}자 이상)`}</h4>
                             <div className="space-y-2.5">
@@ -1833,11 +2847,18 @@
                                 {editingReportId && <button type="button" onClick={(e) => { e.preventDefault(); deleteReadingReport(editingReportId); }} className="text-red-500 bg-red-50 font-bold py-2 px-4 rounded-lg text-xs shadow-sm hover:bg-red-100 flex items-center gap-1"><Trash2 className="w-3.5 h-3.5"/> 삭제</button>}
                                 {editingReportId && <button type="button" onClick={cancelEditingReport} className="text-gray-600 bg-gray-200 font-bold py-2 px-4 rounded-lg text-xs shadow-sm hover:bg-gray-300">취소</button>}
                                 {(!editingReportId || readingReports.find(r => r.id === editingReportId)?.isDraft) && (
-                                  <button type="button" onClick={() => submitReadingReport(true)} className="bg-slate-500 hover:bg-slate-600 text-white font-bold py-2 px-4 rounded-lg text-xs shadow-sm transition-colors flex items-center gap-1"><Save className="w-3.5 h-3.5"/> 임시저장</button>
+                                  <button type="button" disabled={submittingReport} onClick={() => submitReadingReport(true)} className={`text-white font-bold py-2 px-4 rounded-lg text-xs shadow-sm transition-colors flex items-center gap-1 ${submittingReport ? 'bg-slate-300 cursor-not-allowed' : 'bg-slate-500 hover:bg-slate-600'}`}><Save className="w-3.5 h-3.5"/> {submittingReport ? "전송 중..." : "임시저장"}</button>
                                 )}
-                                <button type="button" onClick={() => submitReadingReport(false)} disabled={(reportForm.scene||"").length + (reportForm.quote||"").length + (reportForm.summary||"").length + (reportForm.thoughts||"").length < readingCharLimit} className={`text-white font-bold py-2 px-4 rounded-lg text-xs shadow-sm transition-colors ${(reportForm.scene||"").length + (reportForm.quote||"").length + (reportForm.summary||"").length + (reportForm.thoughts||"").length >= readingCharLimit ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-emerald-300 cursor-not-allowed opacity-70 flex items-center gap-1'}`}>
-                                  {editingReportId ? (readingReports.find(r => r.id === editingReportId)?.isDraft ? "정식 등록 (+1권)" : "수정 완료") : "제출하고 1권 추가"}
-                                </button>
+                                {(() => {
+                                  const totalLen = (reportForm.scene||"").length + (reportForm.quote||"").length + (reportForm.summary||"").length + (reportForm.thoughts||"").length;
+                                  const lenOK = totalLen >= readingCharLimit;
+                                  const disabled = !lenOK || submittingReport;
+                                  return (
+                                    <button type="button" onClick={() => submitReadingReport(false)} disabled={disabled} className={`text-white font-bold py-2 px-4 rounded-lg text-xs shadow-sm transition-colors flex items-center gap-1 ${submittingReport ? 'bg-emerald-300 cursor-not-allowed' : (lenOK ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-emerald-300 cursor-not-allowed opacity-70')}`}>
+                                      {submittingReport ? "전송 중..." : (editingReportId ? (readingReports.find(r => r.id === editingReportId)?.isDraft ? "정식 등록 (+1권)" : "수정 완료") : "제출하고 1권 추가")}
+                                    </button>
+                                  );
+                                })()}
                               </div>
                             </div>
                           </div>
@@ -1860,11 +2881,11 @@
                                 <Search className="absolute left-2.5 top-2.5 w-4 h-4 text-teal-400" />
                                 <input type="text" value={readingSearch} onChange={e => setReadingSearch(e.target.value)} placeholder="책 제목, 작성자 검색" className="w-full pl-9 p-2 text-xs rounded-lg border border-teal-200 outline-none focus:border-teal-400 focus:ring-1 focus:ring-teal-400 bg-teal-50/30" />
                             </div>
-                            <button onClick={() => { setReportLimit(10); showToast("최신 상태입니다."); }} className="p-2 text-teal-600 bg-teal-50 hover:bg-teal-100 rounded-lg shrink-0" title="새로고침"><RefreshCw className="w-4 h-4"/></button>
+                            <button onClick={() => { setReportLimit(10); loadReadingReports(); showToast("최신 상태로 갱신했습니다."); }} className="p-2 text-teal-600 bg-teal-50 hover:bg-teal-100 rounded-lg shrink-0" title="새로고침"><RefreshCw className="w-4 h-4"/></button>
                           </div>
                           <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1 custom-scrollbar">
-                            {displayReadingReports.length === 0 ? <div className="text-xs text-gray-400 text-center py-8 bg-gray-50 rounded-lg border border-dashed border-gray-200">정식 게시된 감상문이 없습니다.</div> : displayReadingReports.map(report => renderReadingReportCard(report, false, myInfo.id))}
-                            {hasMoreReports && (
+                            {boardLoading.readingReports && displayReadingReports.length === 0 ? <div className="text-xs text-emerald-500 text-center py-8 bg-emerald-50/40 rounded-lg border border-dashed border-emerald-200 animate-pulse">⏳ 감상문을 불러오는 중...</div> : displayReadingReports.length === 0 ? <div className="text-xs text-gray-400 text-center py-8 bg-gray-50 rounded-lg border border-dashed border-gray-200">정식 게시된 감상문이 없습니다.</div> : displayReadingReports.map(report => renderReadingReportCard(report, false, myInfo.id))}
+                            {readingReportsHasMore && (
                                 <button onClick={() => setReportLimit(prev => prev + 10)} className="w-full py-2 bg-emerald-50 text-emerald-700 font-bold text-xs rounded-lg mt-2 hover:bg-emerald-100 transition">
                                     더보기 🔽
                                 </button>
@@ -1880,15 +2901,15 @@
                       <div className="bg-white p-4 rounded-xl border border-purple-200 shadow-sm flex flex-col h-[75vh]">
                         <div className="flex justify-between items-center mb-3 shrink-0">
                             <h4 className="text-sm font-bold text-purple-800 flex items-center gap-1.5"><MessageSquare className="w-4 h-4"/> 학급 건의 게시판 (토론)</h4>
-                            <button onClick={() => { setSuggestionLimit(10); showToast("최신 상태입니다."); }} className="p-1.5 text-purple-600 bg-purple-50 hover:bg-purple-100 rounded-lg" title="새로고침"><RefreshCw className="w-3 h-3"/></button>
+                            <button onClick={() => { setSuggestionLimit(10); loadSuggestions(); showToast("최신 상태로 갱신했습니다."); }} className="p-1.5 text-purple-600 bg-purple-50 hover:bg-purple-100 rounded-lg" title="새로고침"><RefreshCw className="w-3 h-3"/></button>
                         </div>
                         <div className="relative mb-3 shrink-0">
                           <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-purple-400" />
                           <input type="text" value={suggestionSearch} onChange={e => setSuggestionSearch(e.target.value)} placeholder="제목, 내용, 작성자 검색" className="w-full pl-8 p-1.5 text-xs rounded-lg border border-purple-200 outline-none focus:border-purple-400 bg-purple-50/30" />
                         </div>
                         <div className="space-y-2.5 flex-1 overflow-y-auto pr-1 mb-4 custom-scrollbar">
-                          {sortedDisplaySuggestions.length === 0 ? <p className="text-center text-gray-400 py-4 text-xs font-medium">등록된 의견이 없습니다.</p> : sortedDisplaySuggestions.map(sug => renderSuggestionCard(sug, false, myInfo.id))}
-                          {hasMoreSuggestions && (
+                          {boardLoading.suggestions && sortedDisplaySuggestions.length === 0 ? <p className="text-center text-purple-500 py-4 text-xs font-medium animate-pulse">⏳ 게시글을 불러오는 중...</p> : sortedDisplaySuggestions.length === 0 ? <p className="text-center text-gray-400 py-4 text-xs font-medium">등록된 의견이 없습니다.</p> : sortedDisplaySuggestions.map(sug => renderSuggestionCard(sug, false, myInfo.id))}
+                          {suggestionsHasMore && (
                               <button onClick={() => setSuggestionLimit(prev => prev + 10)} className="w-full py-2 bg-purple-50 text-purple-700 font-bold text-xs rounded-lg mt-2 hover:bg-purple-100 transition">
                                   더보기 🔽
                               </button>
@@ -1903,6 +2924,27 @@
                           </div>
                         </div>
                       </div>
+                    </div>
+                  )}
+
+                  {studentTab === "polls" && (
+                    <div className="animate-in fade-in space-y-4">
+                      <div className="bg-white p-4 rounded-xl border border-cyan-200 shadow-sm flex justify-between items-start gap-2">
+                        <div>
+                          <h4 className="text-sm font-bold text-cyan-800 flex items-center gap-1.5 mb-1"><BarChart className="w-4 h-4"/> 학급 투표</h4>
+                          <p className="text-[10px] text-gray-500">선생님이 올린 투표에 참여하세요. 결과는 투표 마감 후 공개됩니다.</p>
+                        </div>
+                        <button onClick={() => { loadPolls(); showToast("최신 상태로 갱신했습니다."); }} className="p-2 text-cyan-600 bg-cyan-50 hover:bg-cyan-100 rounded-lg shrink-0" title="새로고침"><RefreshCw className="w-4 h-4"/></button>
+                      </div>
+                      {boardLoading.polls && polls.length === 0 ? (
+                        <div className="text-xs text-cyan-500 text-center py-10 bg-cyan-50/40 rounded-xl border border-dashed border-cyan-200 animate-pulse">⏳ 투표를 불러오는 중...</div>
+                      ) : polls.length === 0 ? (
+                        <div className="text-xs text-gray-400 text-center py-10 bg-white rounded-xl border border-dashed border-gray-200">진행 중인 투표가 없습니다.</div>
+                      ) : (
+                        <div className="space-y-3">
+                          {polls.map(poll => renderPollCard(poll, false, myInfo.id))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1923,26 +2965,31 @@
           { id: "daily_records", label: "✅ 일일점검", color: "slate" },
           { id: "suggestions", label: "💬 건의게시판", color: "purple" },
           { id: "reading_reports", label: "🐢 독서감상문", color: "emerald" },
+          { id: "polls", label: "📊 투표", color: "cyan" },
           { id: "settings", label: "⚙️ 설정", color: "slate" }
         ];
 
-        const displaySuggestionsTeacher = suggestions.filter(s => {
+        const filteredSuggestionsTeacher = suggestions.filter(s => {
           if (!suggestionSearch.trim()) return true;
           const q = suggestionSearch.toLowerCase();
           return (s.title && s.title.toLowerCase().includes(q)) || (s.text && s.text.toLowerCase().includes(q)) || (s.studentName && s.studentName.toLowerCase().includes(q));
         });
 
-        const sortedDisplaySuggestionsTeacher = displaySuggestionsTeacher.slice().sort((a, b) => {
+        const sortedFilteredSuggestionsTeacher = filteredSuggestionsTeacher.slice().sort((a, b) => {
           if (a.isAnnouncement && !b.isAnnouncement) return -1;
           if (!a.isAnnouncement && b.isAnnouncement) return 1;
-          return b.id - a.id;
+          return 0;
         });
+        const sortedDisplaySuggestionsTeacher = suggestionSearch.trim() ? sortedFilteredSuggestionsTeacher : sortedFilteredSuggestionsTeacher.slice(0, suggestionLimit);
+        const suggestionsTeacherHasMore = !suggestionSearch.trim() && sortedFilteredSuggestionsTeacher.length > suggestionLimit;
 
-        const displayReadingReportsTeacher = readingReports.filter(r => {
+        const filteredReadingReportsTeacher = readingReports.filter(r => {
           if (!readingSearch.trim()) return true;
           const q = readingSearch.toLowerCase();
           return (r.title && r.title.toLowerCase().includes(q)) || (r.studentName && r.studentName.toLowerCase().includes(q)) || (r.author && r.author.toLowerCase().includes(q)) || (r.publisher && r.publisher.toLowerCase().includes(q));
         });
+        const displayReadingReportsTeacher = readingSearch.trim() ? filteredReadingReportsTeacher : filteredReadingReportsTeacher.slice(0, reportLimit);
+        const readingReportsTeacherHasMore = !readingSearch.trim() && filteredReadingReportsTeacher.length > reportLimit;
 
         content = (
           <div className="min-h-screen bg-gray-100 p-2 md:p-3 font-sans text-gray-800 flex justify-center relative">
@@ -2202,8 +3249,8 @@
                                   )}
                                   {isDesk && student && (
                                     <>
-                                      <span className="absolute top-0.5 left-1 text-[7px] text-gray-400 font-bold">{Math.floor(index/7)+1}줄</span>
-                                      <span className={`text-[10px] font-bold ${student.gender === 'M' ? 'text-blue-800' : 'text-pink-800'}`}>{student.name}</span>
+                                      <span className="absolute top-0.5 left-1 text-[8px] text-gray-400 font-bold">{Math.floor(index/7)+1}줄</span>
+                                      <span className={`text-sm font-bold ${student.gender === 'M' ? 'text-blue-800' : 'text-pink-800'}`}>{student.name}</span>
                                     </>
                                   )}
                                   {!isDesk && isLayoutEditMode && <span className="text-[8px] text-gray-400 font-bold">빈칸</span>}
@@ -2426,17 +3473,34 @@
                 {teacherTab === "role_stats" && (
                   <div className="space-y-5 animate-in fade-in duration-300 max-w-4xl mx-auto">
                     <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-                      <div className="p-4 border-b border-gray-100 bg-indigo-50/30">
-                        <h2 className="text-base font-black text-indigo-800 flex items-center gap-1.5"><BarChart className="w-4 h-4"/> 역할별 활동 통계 (부여 횟수)</h2>
-                        <p className="text-[10px] text-gray-500 mt-1">목록을 클릭하면 수혜자 랭킹을 볼 수 있습니다.</p>
+                      <div className="p-4 border-b border-gray-100 bg-indigo-50/30 flex items-center justify-between flex-wrap gap-2">
+                        <div>
+                          <h2 className="text-base font-black text-indigo-800 flex items-center gap-1.5"><BarChart className="w-4 h-4"/> 역할별 활동 통계 (부여 횟수)</h2>
+                          <p className="text-[10px] text-gray-500 mt-1">목록을 클릭하면 수혜자 랭킹을 볼 수 있습니다.</p>
+                        </div>
+                        <div className="flex items-center gap-1 bg-white border border-indigo-200 rounded-lg p-0.5">
+                          {[{k:"points",label:"점수순"},{k:"name",label:"이름순"},{k:"recent",label:"최신순"}].map(opt => (
+                            <button key={opt.k} onClick={()=>setRoleStatsSort(opt.k)} className={`text-[10px] font-bold px-2.5 py-1 rounded transition-colors ${roleStatsSort===opt.k?"bg-indigo-600 text-white":"text-indigo-600 hover:bg-indigo-50"}`}>{opt.label}</button>
+                          ))}
+                        </div>
                       </div>
                       <div className="overflow-x-auto">
                         <table className="w-full text-xs text-left">
-                          <thead><tr className="bg-gray-50 border-b"><th className="p-2.5 pl-4 w-1/2">역할명</th><th className="p-2.5 text-center w-1/2">총 상/벌점 부여 횟수 (클릭)</th></tr></thead>
+                          <thead><tr className="bg-gray-50 border-b"><th className="p-2.5 pl-4">역할명</th><th className="p-2.5">현재 담당</th><th className="p-2.5 text-center w-24">최근 활동</th><th className="p-2.5 text-center w-28">총 부여 점수</th></tr></thead>
                           <tbody>
                             {getTeacherRoleStatsArray().map((st, i) => (
                               <tr key={i} onClick={()=>setSelectedRoleStat({role: st.role, receivers: st.receivers || {}})} className="border-b hover:bg-indigo-50 cursor-pointer text-sm">
-                                <td className="p-3 pl-6 font-bold text-gray-800 flex items-center gap-1.5"><Search className="w-3 h-3 text-indigo-400" /> {st.role}</td>
+                                <td className="p-3 pl-6 font-bold text-gray-800"><div className="flex items-center gap-1.5"><Search className="w-3 h-3 text-indigo-400" /> {st.role}</div></td>
+                                <td className="p-3">
+                                  {st.assignees && st.assignees.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {st.assignees.map(a => (
+                                        <span key={a.id} className="text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded">{a.name}</span>
+                                      ))}
+                                    </div>
+                                  ) : <span className="text-[10px] text-gray-400">-</span>}
+                                </td>
+                                <td className="p-3 text-center text-[10px] text-gray-500 font-medium">{st.lastDate || "-"}</td>
                                 <td className="p-3 text-center font-black text-indigo-600 bg-indigo-50/20">{st.pts > 0 ? `+${st.pts}` : st.pts} 점</td>
                               </tr>
                             ))}
@@ -2480,7 +3544,7 @@
                     <div className="flex justify-between items-center mb-3 shrink-0">
                       <h2 className="text-sm font-black text-gray-800 flex items-center gap-1.5"><MessageSquare className="w-4 h-4 text-blue-600"/> 건의 게시판 관리</h2>
                       <div className="flex items-center gap-2">
-                          <button onClick={() => { setSuggestionLimit(10); showToast("최신 상태입니다."); }} className="p-1.5 text-purple-600 bg-purple-50 hover:bg-purple-100 rounded-lg" title="새로고침"><RefreshCw className="w-3.5 h-3.5"/></button>
+                          <button onClick={() => { setSuggestionLimit(10); loadSuggestions(); showToast("최신 상태로 갱신했습니다."); }} className="p-1.5 text-purple-600 bg-purple-50 hover:bg-purple-100 rounded-lg" title="새로고침"><RefreshCw className="w-3.5 h-3.5"/></button>
                           <div className="text-[10px] font-bold text-blue-800 bg-blue-50 px-2 py-1 rounded">표시중: {suggestions.length}건</div>
                       </div>
                     </div>
@@ -2489,7 +3553,11 @@
                       <input type="text" value={suggestionSearch} onChange={e => setSuggestionSearch(e.target.value)} placeholder="제목, 내용, 작성자 검색" className="w-full pl-8 p-1.5 text-xs rounded-lg border border-purple-200 outline-none focus:border-purple-400 bg-purple-50/30" />
                     </div>
                     <div className="space-y-2.5 flex-1 overflow-y-auto pr-1 mb-4 custom-scrollbar">
-                      {sortedDisplaySuggestionsTeacher.length === 0 ? (
+                      {boardLoading.suggestions && sortedDisplaySuggestionsTeacher.length === 0 ? (
+                        <div className="bg-purple-50/40 rounded-xl p-8 flex flex-col items-center justify-center border border-purple-200 border-dashed animate-pulse">
+                          <p className="text-purple-500 font-medium text-sm">⏳ 게시글을 불러오는 중...</p>
+                        </div>
+                      ) : sortedDisplaySuggestionsTeacher.length === 0 ? (
                         <div className="bg-gray-50 rounded-xl p-8 flex flex-col items-center justify-center border border-gray-200 border-dashed">
                           <MessageSquare className="w-10 h-10 text-gray-300 mb-2" />
                           <p className="text-gray-500 font-medium text-sm">게시글이 없습니다.</p>
@@ -2497,7 +3565,7 @@
                       ) : (
                         sortedDisplaySuggestionsTeacher.map(sug => renderSuggestionCard(sug, true, null))
                       )}
-                      {hasMoreSuggestions && (
+                      {suggestionsTeacherHasMore && (
                           <button onClick={() => setSuggestionLimit(prev => prev + 10)} className="w-full py-2 bg-purple-50 text-purple-700 font-bold text-xs rounded-lg mt-2 hover:bg-purple-100 transition">
                               더보기 🔽
                           </button>
@@ -2524,7 +3592,7 @@
                     <div className="flex justify-between items-center mb-3">
                       <h2 className="text-sm font-black text-emerald-800 flex items-center gap-1.5"><BookOpen className="w-4 h-4"/> 독서 감상문 관리</h2>
                       <div className="flex items-center gap-2">
-                          <button onClick={() => { setReportLimit(10); showToast("최신 상태입니다."); }} className="p-1.5 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg" title="새로고침"><RefreshCw className="w-3.5 h-3.5"/></button>
+                          <button onClick={() => { setReportLimit(10); loadReadingReports(); showToast("최신 상태로 갱신했습니다."); }} className="p-1.5 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg" title="새로고침"><RefreshCw className="w-3.5 h-3.5"/></button>
                           <div className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-1 rounded">표시중: {readingReports.length}건</div>
                       </div>
                     </div>
@@ -2533,13 +3601,15 @@
                       <input type="text" value={readingSearch} onChange={e => setReadingSearch(e.target.value)} placeholder="책 제목, 작성자, 지은이 검색" className="w-full pl-8 p-1.5 text-xs rounded-lg border border-emerald-200 outline-none focus:border-emerald-400 bg-emerald-50/30" />
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[70vh] overflow-y-auto pr-1 custom-scrollbar">
-                      {displayReadingReportsTeacher.length === 0 ? (
+                      {boardLoading.readingReports && displayReadingReportsTeacher.length === 0 ? (
+                        <div className="text-xs text-emerald-500 text-center py-6 col-span-1 md:col-span-2 animate-pulse">⏳ 감상문을 불러오는 중...</div>
+                      ) : displayReadingReportsTeacher.length === 0 ? (
                         <div className="text-xs text-gray-400 text-center py-6 col-span-1 md:col-span-2">검색된 독서 감상문이 없습니다.</div>
                       ) : (
                         displayReadingReportsTeacher.map(report => renderReadingReportCard(report, true, null))
                       )}
                     </div>
-                    {hasMoreReports && (
+                    {readingReportsTeacherHasMore && (
                         <button onClick={() => setReportLimit(prev => prev + 10)} className="w-full py-2 bg-emerald-50 text-emerald-700 font-bold text-xs rounded-lg mt-3 hover:bg-emerald-100 transition">
                             더보기 🔽
                         </button>
@@ -2547,9 +3617,277 @@
                   </div>
                 )}
 
+                {teacherTab === "polls" && (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-in fade-in max-w-5xl mx-auto">
+                    <div className="lg:col-span-1">
+                      <div className="bg-white p-4 rounded-xl shadow-sm border border-cyan-200 sticky top-2">
+                        <h2 className="text-sm font-black text-cyan-800 flex items-center gap-1.5 mb-3"><BarChart className="w-4 h-4"/> 새 투표 만들기</h2>
+                        <input type="text" value={pollTitle} onChange={e=>setPollTitle(e.target.value)} placeholder="투표 제목 (예: 학급 행사 정하기)" className="w-full p-2 text-xs border rounded-lg mb-3 font-bold outline-none focus:border-cyan-400" />
+                        <div className="space-y-2 mb-2">
+                          {pollOptions.map((opt, i) => (
+                            <div key={i} className="flex gap-1.5 items-center">
+                              <span className="text-[10px] font-bold text-gray-400 w-4">{i+1}.</span>
+                              <input type="text" value={opt} onChange={e=>{ const arr=[...pollOptions]; arr[i]=e.target.value; setPollOptions(arr); }} placeholder={`선택지 ${i+1}`} className="flex-1 p-1.5 text-xs border rounded-lg outline-none focus:border-cyan-400" />
+                              {pollOptions.length > 2 && (
+                                <button type="button" onClick={()=>setPollOptions(pollOptions.filter((_,idx)=>idx!==i))} className="text-red-400 hover:text-red-600 p-1"><X className="w-3.5 h-3.5"/></button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        <button type="button" onClick={()=>setPollOptions([...pollOptions, ""])} className="text-[10px] font-bold text-cyan-600 hover:text-cyan-800 mb-3">+ 선택지 추가</button>
+                        <label className="flex items-center gap-1.5 cursor-pointer mb-3"><input type="checkbox" checked={pollIsMultiple} onChange={e=>setPollIsMultiple(e.target.checked)} className="w-3.5 h-3.5 accent-cyan-600"/><span className="text-[11px] font-bold text-gray-600">복수 선택 허용</span></label>
+                        <button type="button" onClick={createPoll} className="w-full bg-cyan-600 text-white py-2 text-xs font-bold rounded-lg shadow-sm hover:bg-cyan-700 transition-colors">투표 등록하기</button>
+                      </div>
+                    </div>
+                    <div className="lg:col-span-2 space-y-3">
+                      <div className="flex justify-end">
+                        <button onClick={() => { loadPolls(); showToast("최신 상태로 갱신했습니다."); }} className="flex items-center gap-1 text-[10px] font-bold text-cyan-700 bg-cyan-50 hover:bg-cyan-100 px-2.5 py-1.5 rounded-lg" title="새로고침"><RefreshCw className="w-3.5 h-3.5"/> 결과 새로고침</button>
+                      </div>
+                      {boardLoading.polls && polls.length === 0 ? (
+                        <div className="text-xs text-cyan-500 text-center py-10 bg-cyan-50/40 rounded-xl border border-dashed border-cyan-200 animate-pulse">⏳ 투표를 불러오는 중...</div>
+                      ) : polls.length === 0 ? (
+                        <div className="text-xs text-gray-400 text-center py-10 bg-white rounded-xl border border-dashed border-gray-200">등록된 투표가 없습니다. 왼쪽에서 새 투표를 만들어보세요.</div>
+                      ) : (
+                        polls.map(poll => renderPollCard(poll, true, null))
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {teacherTab === "settings" && (
                   <div className="space-y-4 animate-in fade-in max-w-5xl mx-auto">
-                    
+
+                    {/* 🔍 역할 점수 진단 */}
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-orange-200">
+                      <div className="flex justify-between items-center mb-2">
+                        <div>
+                          <h2 className="text-sm font-black text-orange-800 mb-1 flex items-center gap-1.5">🔍 역할 점수 진단</h2>
+                          <p className="text-[10px] text-gray-500">역할별 점수 합계와 잠재적 데이터 손실(override, 미정의 역할)을 검출합니다.</p>
+                        </div>
+                        <button type="button" onClick={diagnoseRoleScores} className="bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold py-2 px-4 rounded-lg shadow-sm transition-colors whitespace-nowrap">진단 실행</button>
+                      </div>
+                      {roleDiag && (
+                        <div className="mt-3 border-t border-orange-100 pt-3 space-y-3 text-[11px]">
+                          {roleDiag.lostPts > 0 && (
+                            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                              <div className="font-black text-red-800 mb-1">⚠️ 손실 의심: {roleDiag.lostPts}점 ({roleDiag.overrides.length}건)</div>
+                              <div className="text-[10px] text-red-700 mb-2">mainState에 점수가 있는데 sharedRecords의 false 값이 덮어 화면에서 안 보임. 원인: 학생이 평가를 clear했거나 시스템 동기화 문제.</div>
+                              <div className="text-[10px] text-red-700 mb-2">역할별 손실: {Object.entries(roleDiag.lostByRole).map(([r,p]) => `${r}: -${p}점`).join(", ") || "(없음)"}</div>
+                              <button type="button" onClick={restoreOverriddenScores} className="bg-red-600 hover:bg-red-700 text-white text-[10px] font-bold py-1.5 px-3 rounded">덮어쓴 점수 복구 (false 항목 제거)</button>
+                            </div>
+                          )}
+                          {roleDiag.undefinedRoles.length > 0 && (
+                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                              <div className="font-bold text-amber-800 mb-1">⚠️ roleSettings에 없는 역할: {roleDiag.undefinedRoles.join(", ")}</div>
+                              <div className="text-[10px] text-amber-700">이 역할로 부여된 점수는 기본값 +1로만 계산됩니다. ⚙️ 설정 → 역할별 배점에 등록하면 정확히 계산됩니다.</div>
+                            </div>
+                          )}
+                          <div>
+                            <div className="font-bold text-gray-700 mb-1">📊 역할별 점수 합계 (mainState 기준)</div>
+                            <div className="max-h-48 overflow-y-auto bg-gray-50 rounded p-2 space-y-0.5">
+                              {Object.entries(roleDiag.byRoleMain).sort((a,b)=>b[1]-a[1]).map(([r,p]) => (
+                                <div key={r} className="flex justify-between text-[10px]">
+                                  <span className="text-gray-700">{r}</span>
+                                  <span className="font-bold text-gray-900">{p}점 {roleDiag.byRoleShared[r] ? <span className="text-blue-600">(+{roleDiag.byRoleShared[r]} sharedRecords)</span> : ''}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="text-[10px] text-gray-500">총 entry — mainState: {roleDiag.mainCount}, sharedRecords: {roleDiag.sharedCount}</div>
+
+                          {/* 역할명 변형 자동 통합 */}
+                          {roleGroups.length === 0 ? (
+                            <div className="text-[10px] text-gray-400 border-t border-orange-100 pt-2">통합할 유사 역할 그룹이 없습니다.</div>
+                          ) : (
+                              <div className="border-t border-orange-200 pt-3">
+                                <div className="font-black text-orange-800 mb-1">🔧 유사 역할 자동 통합 ({roleGroups.length}개 그룹)</div>
+                                <div className="text-[10px] text-gray-500 mb-2">같은 역할인데 이름이 여러 개로 나뉜 그룹입니다. 기준 이름을 고르고 통합하면 점수가 합쳐집니다. (점수는 변하지 않고, 이름만 합쳐짐)</div>
+                                <div className="space-y-2 max-h-72 overflow-y-auto">
+                                  {roleGroups.map((g, gi) => {
+                                    const chosen = canonicalChoice[g.key] || g.variants[0].name;
+                                    return (
+                                      <div key={gi} className="bg-orange-50/50 border border-orange-100 rounded-lg p-2">
+                                        <div className="flex flex-wrap gap-1 mb-1.5">
+                                          {g.variants.map(v => (
+                                            <span key={v.name} className="text-[10px] bg-white border border-gray-200 rounded px-1.5 py-0.5">
+                                              {v.name} <span className="text-gray-500">{v.pts}점</span>
+                                            </span>
+                                          ))}
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="text-[10px] font-bold text-gray-600 shrink-0">기준 이름:</span>
+                                          <select value={chosen} onChange={e => setCanonicalChoice({ ...canonicalChoice, [g.key]: e.target.value })} className="flex-1 text-[10px] p-1 border rounded outline-none">
+                                            {g.variants.map(v => <option key={v.name} value={v.name}>{v.name}</option>)}
+                                          </select>
+                                          <button type="button" disabled={mergeInProgress} onClick={() => mergeRoleVariants(g.variants.map(v => v.name), chosen)} className={`text-[10px] font-bold px-2 py-1 rounded shrink-0 ${mergeInProgress ? 'bg-gray-300 text-gray-500' : 'bg-orange-600 hover:bg-orange-700 text-white'}`}>
+                                            {mergeInProgress ? "처리중..." : `통합 (${g.total}점)`}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 🐢 거북이 독서 데이터 백업 */}
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-teal-300">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <h2 className="text-sm font-black text-teal-800 mb-1 flex items-center gap-1.5">🐢 거북이 독서 데이터 백업</h2>
+                          <p className="text-[10px] text-gray-500">감상문 전체 + 책 권수 + 거북이 점수 이력을 JSON 파일로 내려받습니다. (2학기 새 DB 전환 대비 영구 보존용)</p>
+                        </div>
+                        <button type="button" onClick={exportTurtleBackup} className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold py-2 px-4 rounded-lg shadow-sm transition-colors whitespace-nowrap">JSON 백업</button>
+                      </div>
+                      {backupSummary && (
+                        <div className="mt-3 border-t border-teal-100 pt-2 text-[11px] text-gray-700 grid grid-cols-2 md:grid-cols-3 gap-1.5">
+                          <div>📖 감상문: <b className="text-teal-700">{backupSummary.readingReports}</b>건 (정식 {backupSummary.readingReportsNonDraft})</div>
+                          <div>📚 책권수(mainState): <b>{backupSummary.booksReadMainStudents}</b>명</div>
+                          <div>📚 책권수(shared): <b>{backupSummary.booksReadSharedStudents}</b>명</div>
+                          <div>🐢 거북이점수(main): <b>{backupSummary.turtleScoreMain}</b>건</div>
+                          <div>🐢 거북이점수(shared): <b>{backupSummary.turtleScoreShared}</b>건</div>
+                          <div className="text-teal-600 font-bold">✅ 다운로드 완료</div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 📚 책 카운트 재계산 */}
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-emerald-200">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <h2 className="text-sm font-black text-emerald-800 mb-1 flex items-center gap-1.5"><BookOpen className="w-4 h-4" /> 책 카운트 재계산</h2>
+                          <p className="text-[10px] text-gray-500">독서감상문에 실제 저장된 글의 개수를 기준으로 모든 학생의 권수를 정확히 동기화합니다.</p>
+                        </div>
+                        <button type="button" onClick={recomputeBookCounts} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 px-4 rounded-lg shadow-sm transition-colors whitespace-nowrap">재계산 실행</button>
+                      </div>
+                    </div>
+
+                    {/* 🛠 점수 수동 보정 */}
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-amber-200">
+                      <h2 className="text-sm font-black text-amber-800 mb-1 flex items-center gap-1.5">🛠 점수 수동 보정</h2>
+                      <p className="text-[10px] text-gray-500 mb-3">잘못 입력된 점수를 특정 날짜·카테고리에서 직접 새 값으로 덮어쓸 수 있습니다. (예: 폭증한 점수 정정)</p>
+                      {(() => {
+                        const sid = parseInt(fixScoreStudent);
+                        const cur = sid && fixScoreDate && fixScoreCategory ? (records||{})[fixScoreDate]?.[fixScoreCategory]?.[sid] : undefined;
+                        const curDisplay = cur === undefined ? "(기록 없음)" : (typeof cur === "number" ? `${cur}점` : String(cur));
+
+                        // 선택된 학생의 모든 선생님 카테고리 기록 수집
+                        const teacherCats = ["teacher_racing", "teacher_speaking", "teacher_listening", "teacher_communication"];
+                        const studentRows = [];
+                        if (sid) {
+                          Object.entries(records || {}).forEach(([date, dR]) => {
+                            if (!dR || typeof dR !== "object") return;
+                            teacherCats.forEach(cat => {
+                              const v = dR[cat]?.[sid];
+                              if (v !== undefined && v !== null && v !== false && v !== "") {
+                                studentRows.push({ date, category: cat, value: v });
+                              }
+                            });
+                          });
+                          studentRows.sort((a,b) => Math.abs(Number(b.value)||0) - Math.abs(Number(a.value)||0));
+                        }
+
+                        return (
+                          <>
+                            <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
+                              <div className="flex flex-col">
+                                <label className="text-[9px] font-bold text-gray-500 mb-0.5">학생</label>
+                                <select value={fixScoreStudent} onChange={e=>setFixScoreStudent(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400">
+                                  <option value="">선택...</option>
+                                  {students.map(s => <option key={s.id} value={s.id}>{s.id}번 {s.name}</option>)}
+                                </select>
+                              </div>
+                              <div className="flex flex-col">
+                                <label className="text-[9px] font-bold text-gray-500 mb-0.5">날짜</label>
+                                <input type="date" value={fixScoreDate} onChange={e=>setFixScoreDate(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400" />
+                              </div>
+                              <div className="flex flex-col">
+                                <label className="text-[9px] font-bold text-gray-500 mb-0.5">카테고리</label>
+                                <select value={fixScoreCategory} onChange={e=>setFixScoreCategory(e.target.value)} className="p-2 text-xs border rounded-lg outline-none focus:border-amber-400">
+                                  <option value="teacher_racing">teacher_racing — 상점(일)</option>
+                                  <option value="teacher_communication">teacher_communication — 말차례·경청(일)</option>
+                                  <option value="teacher_speaking">teacher_speaking — 말하기 (구버전)</option>
+                                  <option value="teacher_listening">teacher_listening — 듣기 (구버전)</option>
+                                </select>
+                              </div>
+                              <div className="flex flex-col">
+                                <label className="text-[9px] font-bold text-gray-500 mb-0.5">현재값 → 새 값</label>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-bold text-gray-600 bg-gray-100 px-2 py-2 rounded-lg whitespace-nowrap">{curDisplay}</span>
+                                  <input type="number" value={fixScoreNewValue} onChange={e=>setFixScoreNewValue(e.target.value)} placeholder="새 값" className="w-20 p-2 text-xs border rounded-lg outline-none focus:border-amber-400" />
+                                </div>
+                              </div>
+                              <button type="button" onClick={async () => { await fixTeacherScoreAbsolute(fixScoreStudent, fixScoreDate, fixScoreCategory, fixScoreNewValue); setFixScoreNewValue(""); }} className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold py-2 px-3 rounded-lg shadow-sm transition-colors">덮어쓰기 저장</button>
+                            </div>
+                            <p className="text-[9px] text-amber-700 mt-2">💡 학생·날짜·카테고리를 고르면 현재 저장된 점수가 표시됩니다. 새 값(숫자, 0 또는 음수 포함)을 입력하고 저장하세요.</p>
+
+                            {sid > 0 && (
+                              <div className="mt-3 border-t border-amber-100 pt-3">
+                                {(() => {
+                                  const sumByCat = { teacher_racing: 0, teacher_communication: 0, teacher_speaking: 0, teacher_listening: 0 };
+                                  studentRows.forEach(r => { const n = Number(r.value) || 0; if (sumByCat[r.category] !== undefined) sumByCat[r.category] += n; });
+                                  const grand = sumByCat.teacher_racing + sumByCat.teacher_communication + sumByCat.teacher_speaking + sumByCat.teacher_listening;
+                                  return (
+                                    <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-[10px]">
+                                      <div className="font-black text-amber-800 mb-1">📊 모든 날짜 합계 (= 역할통계의 "선생님 권한 부여" 학생값)</div>
+                                      <div className="grid grid-cols-2 md:grid-cols-5 gap-1.5">
+                                        <div><span className="text-gray-500">상점</span> <span className="font-bold text-blue-700">{sumByCat.teacher_racing}</span></div>
+                                        <div><span className="text-gray-500">말차례·경청</span> <span className="font-bold text-orange-700">{sumByCat.teacher_communication}</span></div>
+                                        <div><span className="text-gray-500">말하기(구)</span> <span className={`font-bold ${Math.abs(sumByCat.teacher_speaking)>=10?'text-red-600':'text-gray-600'}`}>{sumByCat.teacher_speaking}</span></div>
+                                        <div><span className="text-gray-500">듣기(구)</span> <span className={`font-bold ${Math.abs(sumByCat.teacher_listening)>=10?'text-red-600':'text-gray-600'}`}>{sumByCat.teacher_listening}</span></div>
+                                        <div className="font-black"><span className="text-gray-500">합계</span> <span className="text-amber-900">{grand}</span></div>
+                                      </div>
+                                      {(Math.abs(sumByCat.teacher_speaking) >= 10 || Math.abs(sumByCat.teacher_listening) >= 10) && (
+                                        <div className="mt-2 text-[10px] text-red-700 font-bold">⚠️ 구버전(teacher_speaking/listening)에 비정상 값이 남아 있어요. 아래 표에서 빨간 행을 찾아 "0으로" 처리하세요.</div>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                                <h3 className="text-[11px] font-black text-amber-800 mb-2">📋 {students.find(s=>s.id===sid)?.name} 학생의 선생님 점수 기록 ({studentRows.length}건, 값 큰 순)</h3>
+                                {studentRows.length === 0 ? (
+                                  <p className="text-[10px] text-gray-400">선생님 권한 부여 기록이 없습니다.</p>
+                                ) : (
+                                  <div className="max-h-60 overflow-y-auto custom-scrollbar border border-gray-100 rounded-lg">
+                                    <table className="w-full text-[10px]">
+                                      <thead className="bg-amber-50 sticky top-0">
+                                        <tr>
+                                          <th className="p-1.5 text-left font-bold text-amber-800">날짜</th>
+                                          <th className="p-1.5 text-left font-bold text-amber-800">카테고리</th>
+                                          <th className="p-1.5 text-center font-bold text-amber-800">현재 점수</th>
+                                          <th className="p-1.5 text-center font-bold text-amber-800">동작</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {studentRows.map((row, i) => {
+                                          const num = Number(row.value) || 0;
+                                          const isBig = Math.abs(num) >= 10;
+                                          return (
+                                            <tr key={i} className={`border-t border-gray-100 ${isBig ? 'bg-red-50' : ''}`}>
+                                              <td className="p-1.5 font-medium text-gray-700">{row.date}</td>
+                                              <td className="p-1.5 text-gray-600">{row.category}</td>
+                                              <td className={`p-1.5 text-center font-black ${isBig ? 'text-red-600' : 'text-gray-800'}`}>{String(row.value)}{isBig && ' ⚠️'}</td>
+                                              <td className="p-1.5 text-center">
+                                                <button type="button" onClick={() => { setFixScoreDate(row.date); setFixScoreCategory(row.category); setFixScoreNewValue(""); }} className="text-[9px] font-bold text-amber-700 bg-amber-100 hover:bg-amber-200 px-2 py-0.5 rounded mr-1">선택</button>
+                                                <button type="button" onClick={() => fixTeacherScoreAbsolute(sid, row.date, row.category, 0)} className="text-[9px] font-bold text-red-700 bg-red-100 hover:bg-red-200 px-2 py-0.5 rounded">0으로</button>
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                                <p className="text-[9px] text-gray-500 mt-2">⚠️ 표시는 |값| ≥ 10인 비정상 의심 행입니다. "선택"으로 그 날짜·카테고리를 위 폼에 채워 새 값을 입력하거나, "0으로"를 눌러 바로 0으로 초기화합니다.</p>
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+
                     {/* ✨ 개요 화면 커스텀 설정 */}
                     <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
                       <h2 className="text-sm font-black text-gray-800 mb-1 flex items-center gap-1.5"><LayoutGrid className="w-4 h-4 text-indigo-500"/> 개요 화면 (대시보드) 위젯 설정</h2>
@@ -2671,12 +4009,9 @@
                       <button type="button" onClick={saveRoleSettings} className="mt-3 bg-slate-700 text-white px-3 py-2 rounded text-xs font-bold w-full hover:bg-slate-800 transition-colors">배점 저장 및 적용하기</button>
                     </div>
 
-                    <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-200 flex justify-between items-center">
-                      <h3 className="text-xs font-bold text-slate-800 flex items-center gap-1"><Lock className="w-3 h-3" /> 마스터 비번 변경</h3>
-                      <div className="flex items-center gap-1">
-                        <input type="text" id="newTeacherPw" placeholder="새 비번" className="w-20 p-1 text-[10px] border rounded outline-none" />
-                        <button type="button" onClick={()=>{changeTeacherPassword(document.getElementById("newTeacherPw").value); document.getElementById("newTeacherPw").value="";}} className="bg-slate-800 text-white px-2 py-1 rounded text-[9px] font-bold">변경</button>
-                      </div>
+                    <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-200">
+                      <h3 className="text-xs font-bold text-slate-800 flex items-center gap-1 mb-1"><Lock className="w-3 h-3" /> 선생님 비밀번호 변경</h3>
+                      <p className="text-[10px] text-gray-500">Firebase Console → Authentication → Users 에서 본인 계정의 비밀번호를 변경하세요. (앱 내 변경은 더 이상 지원하지 않습니다)</p>
                     </div>
 
                     <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-200 flex justify-between items-center">
@@ -2727,7 +4062,12 @@
                                     <span className="truncate pr-1">{student.role || "-"}</span><GripHorizontal className="w-3 h-3 text-gray-300 shrink-0"/>
                                   </div>
                                 </td>
-                                <td className="p-1"><input type="text" value={student.password} onChange={(e) => handleEditStudent(index, "password", e.target.value)} className="w-full p-1 text-center bg-transparent outline-none font-mono" /></td>
+                                <td className="p-1">
+                                  <div className="flex items-center gap-0.5">
+                                    <input type="text" value={student.password} onChange={(e) => handleEditStudent(index, "password", e.target.value)} className="w-full p-1 text-center bg-transparent outline-none font-mono" />
+                                    <button type="button" onClick={() => resetStudentPassword(student.id, student.name)} className="text-amber-600 hover:text-amber-800 p-0.5" title="학생 본인이 정한 비번 초기화 (선생님이 정한 위 비번으로 돌아감)"><Key className="w-3 h-3"/></button>
+                                  </div>
+                                </td>
                                 <td className="p-1 text-center"><button type="button" onClick={() => handleRemoveStudent(index)} className="text-gray-400 hover:text-red-500"><UserMinus className="w-3 h-3 mx-auto" /></button></td>
                               </tr>
                             ))}
@@ -2769,6 +4109,51 @@
                         </div>
                       </div>
                     </div>
+
+                    {/* 🔍 활동 로그 — 학생에게 보이지 않는 조용한 기록 (관리자 전용) */}
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-300">
+                      <div className="flex justify-between items-center mb-2">
+                        <h2 className="text-sm font-black text-slate-800 flex items-center gap-1.5">🔍 활동 로그 (관리자 전용)</h2>
+                        <button type="button" onClick={loadAuditLogs} className="text-[10px] font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-lg">{auditLoading ? "불러오는 중..." : "전체 활동 로그 불러오기"}</button>
+                      </div>
+                      <p className="text-[10px] text-gray-500 mb-3">최근 로그인·점수 변경·DB 쓰기 기록입니다. 학생 화면에는 어떤 변화도 없습니다. 의심 시 UID와 시간으로 추적하세요.</p>
+                      {auditLogs.length === 0 ? (
+                        <p className="text-[10px] text-gray-400 text-center py-4">"불러오기"를 누르면 표시됩니다.</p>
+                      ) : (
+                        <div className="overflow-x-auto max-h-[60vh] overflow-y-auto custom-scrollbar border border-gray-100 rounded-lg">
+                          <table className="w-full text-[10px]">
+                            <thead className="bg-slate-50 sticky top-0">
+                              <tr>
+                                <th className="p-1.5 text-left font-bold text-slate-700">시간</th>
+                                <th className="p-1.5 text-left font-bold text-slate-700">동작</th>
+                                <th className="p-1.5 text-left font-bold text-slate-700">UID(앞12자리)</th>
+                                <th className="p-1.5 text-left font-bold text-slate-700">상세</th>
+                                <th className="p-1.5 text-left font-bold text-slate-700">브라우저</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {auditLogs.map(log => {
+                                const t = log.tsClient ? new Date(log.tsClient) : null;
+                                const tStr = t ? `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}:${String(t.getSeconds()).padStart(2,'0')}` : "-";
+                                const isFail = log.details?.ok === false;
+                                const isBackdoor = log.details?.attemptedBackdoor;
+                                const isScore = String(log.action || "").startsWith("score_");
+                                return (
+                                  <tr key={log.id} className={`border-t border-gray-100 ${isBackdoor ? 'bg-red-100' : isFail ? 'bg-amber-50' : isScore ? 'bg-blue-50/30' : ''}`}>
+                                    <td className="p-1.5 font-mono text-gray-700 whitespace-nowrap">{tStr}</td>
+                                    <td className="p-1.5 font-bold text-slate-800">{isBackdoor && "🚨 "}{log.action}</td>
+                                    <td className="p-1.5 font-mono text-gray-600">{String(log.uid || "").substring(0, 12)}</td>
+                                    <td className="p-1.5 text-gray-600 max-w-xs truncate" title={JSON.stringify(log.details)}>{JSON.stringify(log.details)}</td>
+                                    <td className="p-1.5 text-gray-500 max-w-[200px] truncate" title={log.ua}>{(log.ua || "").substring(0, 30)}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      <p className="text-[9px] text-slate-500 mt-2">💡 빨간 행: 백도어 시도. 노란 행: 로그인 실패. 같은 UID가 평소 어느 학생으로 로그인했는지 함께 보면 누구의 기기인지 추적할 수 있습니다.</p>
+                    </div>
                   </div>
                 )}
               </div>
@@ -2798,6 +4183,33 @@
             <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-4 py-2 rounded-full shadow-xl flex items-center gap-1.5 animate-in slide-in-from-bottom-5 z-[9999]">
               <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />
               <span className="font-bold text-[10px]">{toastMsg}</span>
+            </div>
+          )}
+
+          {showPwChange && (
+            <div className="fixed inset-0 bg-black/50 z-[900] flex items-center justify-center p-4" onClick={() => setShowPwChange(false)}>
+              <div className="bg-white rounded-xl p-5 max-w-sm w-full shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="font-bold mb-3 flex items-center gap-2 text-blue-800"><Key className="w-5 h-5"/> 비밀번호 변경</h3>
+                <p className="text-[10px] text-gray-500 mb-3">새 비밀번호는 본인만 알고 있어야 안전해요. 4자 이상으로 만들어주세요.</p>
+                <form onSubmit={(e) => { e.preventDefault(); submitPasswordChange(); }} className="space-y-2">
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-600">현재 비밀번호</label>
+                    <input type="password" value={pwOld} onChange={e => setPwOld(e.target.value)} autoFocus className="w-full p-2 text-xs border rounded-lg outline-none focus:border-blue-400" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-600">새 비밀번호 (4자 이상)</label>
+                    <input type="password" value={pwNew} onChange={e => setPwNew(e.target.value)} className="w-full p-2 text-xs border rounded-lg outline-none focus:border-blue-400" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-600">새 비밀번호 확인</label>
+                    <input type="password" value={pwNew2} onChange={e => setPwNew2(e.target.value)} className="w-full p-2 text-xs border rounded-lg outline-none focus:border-blue-400" />
+                  </div>
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button type="button" onClick={() => setShowPwChange(false)} className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-xs font-bold rounded">취소</button>
+                    <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded">변경</button>
+                  </div>
+                </form>
+              </div>
             </div>
           )}
 
@@ -2922,15 +4334,52 @@
               {isSecretModalOpen && (
                 <div className="fixed inset-0 bg-black/50 z-[90] flex items-center justify-center p-4">
                   <div className="bg-white rounded-xl p-5 max-w-3xl w-full shadow-2xl">
-                    <h3 className="font-bold mb-4 flex items-center gap-2"><Users className="w-5 h-5"/> 비밀 자리(몰래 자리) 세팅</h3>
-                    <p className="text-[10px] text-gray-500 mb-3">미리 짜둔 자리를 저장해두고, 학생들 앞에서는 'Ctrl + 자리 뽑기 버튼'을 눌러서 무작위인 척 불러옵니다.</p>
+                    <div className="flex justify-between items-start mb-3 gap-2">
+                      <div>
+                        <h3 className="font-bold flex items-center gap-2"><Users className="w-5 h-5"/> 비밀 자리(몰래 자리) 세팅</h3>
+                        <p className="text-[10px] text-gray-500 mt-1">미리 짜둔 자리를 저장해두고, 학생들 앞에서는 'Ctrl + 자리 뽑기 버튼'을 눌러서 무작위인 척 불러옵니다. 칸을 드래그해 서로 바꿀 수 있습니다.</p>
+                      </div>
+                      <button type="button" onClick={generateSecretSeating} className="px-2.5 py-1.5 bg-indigo-600 text-white rounded text-[10px] font-bold hover:bg-indigo-700 whitespace-nowrap shrink-0 transition-colors">🎲 자동 채우기</button>
+                    </div>
                     <div className="w-full flex justify-center mb-4"><div className="w-1/2 py-1.5 bg-gray-700 text-white text-center rounded-lg font-bold text-[10px]">교 탁</div></div>
                     <div className="grid grid-cols-7 gap-1.5">
-                      {tempSecretSeating.map((student, index) => {
-                        const isDesk = gridConfig[index] === 1;
-                        if (!isDesk) return <div key={index}></div>;
+                      {Array.from({ length: 35 }).map((_, index) => {
+                        const student = tempSecretSeating[index] || null;
+                        const deskType = gridConfig[index];
+                        const isDesk = deskType > 0;
+                        if (!isDesk) return <div key={index} className="aspect-[4/3]"></div>;
+
+                        let deskClasses = '';
+                        if (!student) {
+                          if (deskType === 2) deskClasses = 'bg-blue-50/50 border-dashed border-blue-400';
+                          else if (deskType === 3) deskClasses = 'bg-pink-50/50 border-dashed border-pink-400';
+                          else deskClasses = 'bg-gray-50 border-dashed border-gray-300';
+                        } else {
+                          deskClasses = student.gender === 'M' ? 'bg-blue-50 border-blue-200' : 'bg-pink-50 border-pink-200';
+                          if (deskType === 2) deskClasses += ' ring-2 ring-blue-400 ring-offset-1';
+                          else if (deskType === 3) deskClasses += ' ring-2 ring-pink-400 ring-offset-1';
+                        }
+
                         return (
-                          <div key={index} className="p-1 border rounded-lg aspect-[4/3] flex flex-col justify-center items-center">
+                          <div
+                            key={index}
+                            draggable={!!student}
+                            onDragStart={() => { if (student) setDraggedSecretIdx(index); }}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              if (draggedSecretIdx !== null && draggedSecretIdx !== index) {
+                                const newArr = [...tempSecretSeating];
+                                const temp = newArr[draggedSecretIdx];
+                                newArr[draggedSecretIdx] = newArr[index];
+                                newArr[index] = temp;
+                                setTempSecretSeating(newArr);
+                              }
+                              setDraggedSecretIdx(null);
+                            }}
+                            className={`relative p-1.5 rounded-lg flex flex-col items-center justify-center border aspect-[4/3] transition-all ${deskClasses} ${student ? 'active:cursor-grabbing' : ''}`}
+                          >
+                            <span className="absolute top-0.5 left-1 text-[8px] text-gray-400 font-bold">{Math.floor(index/7)+1}줄</span>
                             <select value={student ? student.id : ""} onChange={(e) => {
                               const val = e.target.value;
                               const newArr = [...tempSecretSeating];
@@ -2942,7 +4391,7 @@
                                 newArr[index] = selectedStudent;
                               }
                               setTempSecretSeating(newArr);
-                            }} className="w-full text-[9px] outline-none font-bold">
+                            }} className={`w-full text-sm text-center outline-none font-bold bg-transparent cursor-pointer ${student ? (student.gender === 'M' ? 'text-blue-800' : 'text-pink-800') : 'text-gray-400'}`}>
                               <option value="">-</option>
                               {students.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                             </select>

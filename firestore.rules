@@ -1,0 +1,99 @@
+rules_version = '2';
+
+// 스마트 학급 관리 시스템 보안 규칙
+//   - 선생님(led13@naver.com): mainState/설정/명단/점수 등 모든 권한
+//   - 학생(익명 인증): 게시판/투표/또래평가/책카운트는 가능, 점수·명단·설정 변경 불가
+//   - 비인증: 모든 접근 거부
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===== 헬퍼 =====
+    function isTeacher() {
+      return request.auth != null
+        && request.auth.token.email == 'led13@naver.com';
+    }
+    function isAuthed() {
+      return request.auth != null;
+    }
+
+    // ===== 마스터 상태 (점수·명단·설정) =====
+    // 선생님만 쓰기. 누구나 읽기.
+    match /classData/mainState {
+      allow read: if true;
+      allow write: if isTeacher();
+    }
+
+    // ===== 학생 쓰기 가능 영역 (또래평가/거북이/책카운트) =====
+    // 변경 가능 키를 peer/booksRead만으로 제한
+    match /classData/sharedRecords {
+      allow read: if true;
+      // 문서 최초 생성: 키가 peer/booksRead만 포함되도록
+      allow create: if isAuthed() &&
+        request.resource.data.keys().hasOnly(['peer', 'booksRead']);
+      // 갱신: 변경된 최상위 키가 peer/booksRead만이도록
+      allow update: if isAuthed() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['peer', 'booksRead']);
+      allow delete: if isTeacher();
+    }
+
+    // ===== 자리/급식 (선생님 전용) =====
+    match /savedClassroomSeating/{doc} {
+      allow read: if isAuthed();
+      allow write: if isTeacher();
+    }
+    match /lunchHistory/{doc} {
+      allow read: if isAuthed();
+      allow write: if isTeacher();
+    }
+
+    // ===== 건의게시판 =====
+    match /suggestions/{doc} {
+      allow read: if isAuthed();
+      allow create: if isAuthed();
+      allow update: if isAuthed();    // 댓글 추가/공지 토글 등
+      allow delete: if isTeacher();
+    }
+
+    // ===== 독서 감상문 =====
+    match /readingReports/{doc} {
+      allow read: if isAuthed();
+      allow create: if isAuthed();
+      allow update: if isAuthed();
+      allow delete: if isAuthed();
+    }
+
+    // ===== 투표 =====
+    match /polls/{doc} {
+      allow read: if isAuthed();
+      allow create: if isTeacher();
+      allow update: if isAuthed();    // 투표 참여
+      allow delete: if isTeacher();
+    }
+
+    // ===== 코인 요청 =====
+    match /coinRequests/{doc} {
+      allow read: if isAuthed();
+      allow create: if isAuthed();
+      allow update: if isTeacher();   // 승인/거절은 선생님만
+      allow delete: if isTeacher();
+    }
+
+    // ===== 학생 본인 비밀번호 (해시) =====
+    // 로그인 시 누구나 읽기, 인증된 사용자가 쓰기 (앱 UI에서 현재 비번 검증 후 설정)
+    // 선생님은 초기화(delete) 가능
+    match /studentAuth/{doc} {
+      allow read: if isAuthed();
+      allow create, update: if isAuthed();
+      allow delete: if isTeacher();
+    }
+
+    // ===== 활동 로그(함정) =====
+    // 누구나 추가 가능(로그인 시도 등 기록), 읽기·수정·삭제는 선생님만
+    match /_sessions/{doc} {
+      allow read: if isTeacher();
+      allow create: if isAuthed();
+      allow update, delete: if false;
+    }
+  }
+}
